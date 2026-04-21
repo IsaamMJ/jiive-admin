@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cd E:/DXB_Superpowers/jiive-admin && npx create-next-app@latest . --typescript --tailwind --app --no-src-dir --import-alias \\\"@/*\\\" --yes 2>&1\",\"timeout\":120000,\"description\":\"Scaffold Nex...",
+  "error": "Exit code 1\nnpm warn exec The following package was not found and will be installed: create-next-app@16.2.4\nThe directory \u001b[32mjiive-admin\u001b[39m contains files that could conflict:\n\n  \u001b[34m.omc\u001b[39m/\n\nEither try using a new directory name, or remove the files listed above.",
+  "timestamp": "2026-04-21T13:34:52.520Z",
+  "retry_count": 1
+}

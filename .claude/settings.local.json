@@ -4,7 +4,23 @@
       "Bash(npx create-next-app@latest . --typescript --tailwind --app --no-src-dir --import-alias \"@/*\" --yes)",
       "Read(//e/DXB_Superpowers/**)",
       "Bash(mv jiive-admin/.omc /tmp/jiive-omc-backup)",
-      "Bash(npx create-next-app@latest jiive-admin --typescript --tailwind --app --no-src-dir --import-alias \"@/*\" --yes)"
+      "Bash(npx create-next-app@latest jiive-admin --typescript --tailwind --app --no-src-dir --import-alias \"@/*\" --yes)",
+      "Bash(cp *)",
+      "Bash(npm install *)",
+      "Bash(npm info *)",
+      "Bash(npx shadcn@latest init --yes --defaults)",
+      "Bash(npx shadcn@latest add card table tabs dialog input label badge sheet skeleton select --yes)",
+      "Bash(npm list *)",
+      "Bash(npm run *)",
+      "Bash(gh repo *)",
+      "Bash(npx vercel *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(git add *)",
+      "Bash(echo -e \"\\\\n# OMC / Claude state\\\\n.omc/\\\\n.claude/settings.local.json\")",
+      "Bash(git rm *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
