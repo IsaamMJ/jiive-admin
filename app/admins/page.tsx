@@ -15,6 +15,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { toast } from "sonner";
 import api from "@/lib/api";
 
 interface Admin {
@@ -49,6 +50,7 @@ export default function AdminsPage() {
       await api.post("/auth/create-admin", form);
       setOpen(false);
       setForm({ email: "", password: "", name: "", role: "admin" });
+      toast.success("Admin created successfully");
       loadAdmins();
     } catch (err: unknown) {
       setFormError((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Failed to create admin");
@@ -61,9 +63,10 @@ export default function AdminsPage() {
     if (!confirm("Deactivate this admin?")) return;
     try {
       await api.delete(`/auth/admins/${id}`);
+      toast.success("Admin deactivated");
       loadAdmins();
     } catch (err: unknown) {
-      alert((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Failed to deactivate");
+      toast.error((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Failed to deactivate");
     }
   };
 

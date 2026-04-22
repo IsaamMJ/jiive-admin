@@ -99,8 +99,32 @@
   "hotPaths": [
     {
       "path": "app\\admins\\page.tsx",
+      "accessCount": 8,
+      "lastAccessed": 1776844831699,
+      "type": "file"
+    },
+    {
+      "path": "app\\layout.tsx",
+      "accessCount": 5,
+      "lastAccessed": 1776844778870,
+      "type": "file"
+    },
+    {
+      "path": "app\\dashboard\\page.tsx",
+      "accessCount": 5,
+      "lastAccessed": 1776844792082,
+      "type": "file"
+    },
+    {
+      "path": "app\\debug\\page.tsx",
+      "accessCount": 5,
+      "lastAccessed": 1776844852787,
+      "type": "file"
+    },
+    {
+      "path": "app\\users\\page.tsx",
       "accessCount": 4,
-      "lastAccessed": 1776788114609,
+      "lastAccessed": 1776844818593,
       "type": "file"
     },
     {
@@ -128,33 +152,9 @@
       "type": "file"
     },
     {
-      "path": "app\\layout.tsx",
-      "accessCount": 2,
-      "lastAccessed": 1776787149450,
-      "type": "file"
-    },
-    {
       "path": "app\\page.tsx",
       "accessCount": 2,
       "lastAccessed": 1776787156847,
-      "type": "file"
-    },
-    {
-      "path": "app\\dashboard\\page.tsx",
-      "accessCount": 2,
-      "lastAccessed": 1776788109970,
-      "type": "file"
-    },
-    {
-      "path": "app\\users\\page.tsx",
-      "accessCount": 2,
-      "lastAccessed": 1776788111142,
-      "type": "file"
-    },
-    {
-      "path": "app\\debug\\page.tsx",
-      "accessCount": 2,
-      "lastAccessed": 1776788115528,
       "type": "file"
     },
     {
@@ -209,6 +209,12 @@
       "path": "app\\login\\page.tsx",
       "accessCount": 1,
       "lastAccessed": 1776787135136,
+      "type": "file"
+    },
+    {
+      "path": ".npmrc",
+      "accessCount": 1,
+      "lastAccessed": 1776789332701,
       "type": "file"
     }
   ],

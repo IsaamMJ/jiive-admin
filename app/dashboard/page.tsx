@@ -28,16 +28,34 @@ function StatCard({ title, value, sub }: { title: string; value: number; sub?: s
   );
 }
 
+const REFRESH_INTERVAL = 30_000;
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  const fetchData = () => {
+    api.get("/dashboard").then((r) => {
+      setData(r.data);
+      setLoading(false);
+      setLastUpdated(new Date());
+    });
+  };
 
   useEffect(() => {
-    api.get("/dashboard").then((r) => { setData(r.data); setLoading(false); });
+    fetchData();
+    const interval = setInterval(fetchData, REFRESH_INTERVAL);
+    return () => clearInterval(interval);
   }, []);
 
   return (
     <AdminLayout title="Dashboard">
+      {lastUpdated && (
+        <p className="text-xs text-muted-foreground mb-3">
+          Last updated: {lastUpdated.toLocaleTimeString()} · auto-refreshes every 30s
+        </p>
+      )}
       {loading ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {Array.from({ length: 6 }).map((_, i) => (

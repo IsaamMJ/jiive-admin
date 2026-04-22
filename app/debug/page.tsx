@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 import api from "@/lib/api";
 
 interface EnvCheck {
@@ -71,9 +72,13 @@ export default function DebugPage() {
     setClearResult(null);
     try {
       const { data } = await api.delete(`/users/${phone}/clear-history`);
-      setClearResult(`Cleared: ${data.cleared.conversations} conversations, ${data.cleared.memories} memories, ${data.cleared.flowStates} flow states`);
+      const msg = `Cleared: ${data.cleared.conversations} conversations, ${data.cleared.memories} memories, ${data.cleared.flowStates} flow states`;
+      setClearResult(msg);
+      toast.success(msg);
     } catch (err: unknown) {
-      setClearResult("Error: " + ((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Unknown error"));
+      const msg = "Error: " + ((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Unknown error");
+      setClearResult(msg);
+      toast.error(msg);
     } finally {
       setClearing(false);
     }

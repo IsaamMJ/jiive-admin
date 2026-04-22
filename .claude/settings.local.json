@@ -20,7 +20,20 @@
       "Bash(git add *)",
       "Bash(echo -e \"\\\\n# OMC / Claude state\\\\n.omc/\\\\n.claude/settings.local.json\")",
       "Bash(git rm *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(git commit -m 'Add .npmrc for legacy-peer-deps \\(Tremor + React 19\\) *)",
+      "Bash(npx ts-node *)",
+      "Bash(aws secretsmanager *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('ADMIN_TOKEN:', d.get\\('ADMIN_TOKEN','not found'\\)\\); print\\('DATABASE_URL:', d.get\\('DATABASE_URL','not found'\\)\\)\")",
+      "Bash(curl *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('CORS_ALLOWED_ORIGINS','not found'\\)\\)\")",
+      "Bash(python -c \" import json with open\\('/tmp/jiive-secrets.json'\\) as f: d = json.load\\(f\\) d['CORS_ALLOWED_ORIGINS'] = 'https://jiive-admin-r5z4.vercel.app' print\\(json.dumps\\(d\\)\\) \")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('CORS_ALLOWED_ORIGINS:', d.get\\('CORS_ALLOWED_ORIGINS'\\)\\)\")",
+      "Bash(aws ecs list-clusters *)",
+      "Bash(aws ecs list-services *)",
+      "Bash(aws ecs *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('Status:', d['service']['status']\\); print\\('Desired:', d['service']['desiredCount']\\)\")",
+      "Bash(npx shadcn@latest add sonner --yes)"
     ]
   }
 }
