@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"aws secretsmanager get-secret-value --secret-id jiive/app-secrets --query SecretString --output text 2>&1 > /tmp/jiive-secrets.json && python -c \\\"\\nimport json\\nwith open('/tmp/jiive-secr...",
-  "error": "Exit code 1\nTraceback (most recent call last):\r\n  File \"<string>\", line 3, in <module>\r\nFileNotFoundError: [Errno 2] No such file or directory: '/tmp/jiive-secrets.json'",
-  "timestamp": "2026-04-21T16:46:25.851Z",
-  "retry_count": 1
-}
