@@ -74,6 +74,7 @@ export default function ResultsPage() {
                   <TableHead>Delta</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Date</TableHead>
+                  <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -93,6 +94,9 @@ export default function ResultsPage() {
                     <TableCell><StatusBadge status={r.status} /></TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {new Date(r.createdAt).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className="text-xs text-primary font-medium">View →</span>
                     </TableCell>
                   </TableRow>
                 ))}
