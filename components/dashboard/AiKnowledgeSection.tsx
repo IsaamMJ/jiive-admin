@@ -211,16 +211,6 @@ function KnowledgeGraphWidget() {
           </>
         )}
       </CardContent>
-      <CardFooter className="text-xs">
-        <a
-          href="https://console.neo4j.io/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary hover:underline"
-        >
-          Open Neo4j Console →
-        </a>
-      </CardFooter>
     </Card>
   );
 }

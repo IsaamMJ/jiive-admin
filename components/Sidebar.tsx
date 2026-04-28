@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   Bug,
   TestTube2,
+  Server,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,7 @@ const nav = [
   { href: "/bookings", label: "Bookings", icon: CalendarCheck },
   { href: "/results", label: "Results", icon: FlaskConical },
   { href: "/admins", label: "Admin Users", icon: ShieldCheck },
+  { href: "/infra", label: "Infra", icon: Server },
   { href: "/debug", label: "Debug", icon: Bug },
   { href: "/thyrocare", label: "Thyrocare", icon: TestTube2 },
 ];

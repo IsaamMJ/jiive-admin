@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AiKnowledgeSection } from "@/components/dashboard/AiKnowledgeSection";
 import api from "@/lib/api";
 
 interface DashboardData {
@@ -65,7 +64,6 @@ export default function DashboardPage() {
         </div>
       ) : data ? (
         <div className="flex flex-col gap-6">
-          <AiKnowledgeSection />
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             <StatCard title="Total Users" value={data.users.total} />
             <StatCard title="New Today" value={data.users.today} sub="users" />
