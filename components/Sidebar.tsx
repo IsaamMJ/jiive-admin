@@ -11,6 +11,7 @@ import {
   Bug,
   TestTube2,
   Server,
+  LineChart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +22,7 @@ const nav = [
   { href: "/results", label: "Results", icon: FlaskConical },
   { href: "/admins", label: "Admin Users", icon: ShieldCheck },
   { href: "/infra", label: "Infra", icon: Server },
+  { href: "/usage", label: "Usage", icon: LineChart },
   { href: "/debug", label: "Debug", icon: Bug },
   { href: "/thyrocare", label: "Thyrocare", icon: TestTube2 },
 ];
