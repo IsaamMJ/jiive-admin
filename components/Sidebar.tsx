@@ -12,6 +12,10 @@ import {
   TestTube2,
   Server,
   LineChart,
+  Coins,
+  Package,
+  Zap,
+  ScrollText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +24,10 @@ const nav = [
   { href: "/users", label: "Users", icon: Users },
   { href: "/bookings", label: "Bookings", icon: CalendarCheck },
   { href: "/results", label: "Results", icon: FlaskConical },
+  { href: "/credits/balances", label: "Credit Balances", icon: Coins },
+  { href: "/credits/packs", label: "Credit Packs", icon: Package },
+  { href: "/credits/action-costs", label: "Action Costs", icon: Zap },
+  { href: "/audit-log", label: "Audit Log", icon: ScrollText },
   { href: "/admins", label: "Admin Users", icon: ShieldCheck },
   { href: "/infra", label: "Infra", icon: Server },
   { href: "/usage", label: "Usage", icon: LineChart },
