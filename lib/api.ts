@@ -2,7 +2,7 @@ import axios from "axios";
 import { getToken, clearToken } from "./auth";
 
 const api = axios.create({
-  baseURL: "https://d3pvjhguhk37b0.cloudfront.net/api/v1/admin",
+  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL || "https://d3pvjhguhk37b0.cloudfront.net/api/v1/admin",
 });
 
 api.interceptors.request.use((config) => {
