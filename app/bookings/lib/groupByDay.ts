@@ -6,6 +6,13 @@ function byTime(a: Booking, b: Booking): number {
   return a.appointmentTime.localeCompare(b.appointmentTime);
 }
 
+// Backend may send "YYYY-MM-DD" or a full ISO datetime ("2026-05-09T00:00:00.000Z").
+// Normalize to YYYY-MM-DD for bucket lookup.
+function normalizeDate(d: string): string {
+  if (!d) return d;
+  return d.length >= 10 ? d.slice(0, 10) : d;
+}
+
 // Buckets `bookings` by `appointmentDate` over the inclusive window [from, from+days-1].
 // Empty days are kept (with empty arrays). Bookings outside the window are dropped.
 // Each bucket's `bookings` is sorted by appointmentTime ASC.
@@ -17,7 +24,8 @@ export function groupByDay(bookings: Booking[], from: string, days: number): Day
   }
 
   for (const b of bookings) {
-    const list = buckets.get(b.appointmentDate);
+    const key = normalizeDate(b.appointmentDate);
+    const list = buckets.get(key);
     if (list) list.push(b);
   }
 
