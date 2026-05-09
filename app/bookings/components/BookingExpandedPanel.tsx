@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { User2, MapPin, Beaker, ExternalLink, RotateCcw } from "lucide-react";
+import { User2, MapPin, Beaker, ExternalLink, RotateCcw, Ban } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { CancellationBadge } from "./CancellationBadge";
 import { CopyableId } from "./CopyableId";
 import type { Booking } from "../lib/types";
 
@@ -49,8 +50,22 @@ export function BookingExpandedPanel({ booking }: { booking: Booking }) {
   const addressLines = [a.addressLine1, a.addressLine2, a.landmark].filter(Boolean).join(", ");
   const cityLine = [a.city, a.state, a.pincode].filter(Boolean).join(" · ");
 
+  const isCancelled = booking.status === "cancelled";
+
   return (
-    <div className="border-t border-border/60 px-4 sm:px-6 py-5 bg-gradient-to-b from-muted/20 to-transparent">
+    <div className="border-t border-border/60 px-4 sm:px-6 py-5 bg-gradient-to-b from-muted/20 to-transparent flex flex-col gap-3">
+      {isCancelled && (
+        <SectionCard icon={Ban} title="Cancellation">
+          <div className="flex flex-col gap-2">
+            <CancellationBadge cancelledBy={booking.cancelledBy} />
+            {booking.cancellationReason ? (
+              <p className="text-sm text-foreground/80 leading-relaxed">{booking.cancellationReason}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground italic">No reason provided.</p>
+            )}
+          </div>
+        </SectionCard>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <SectionCard icon={User2} title="Customer">
           <Field label="Name" value={booking.user.name} />

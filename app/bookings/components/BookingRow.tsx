@@ -3,6 +3,7 @@
 import { ChevronDown, Phone, MapPin, Clock } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { BookingExpandedPanel } from "./BookingExpandedPanel";
+import { CancellationBadge } from "./CancellationBadge";
 import { CopyableId } from "./CopyableId";
 import { formatRelativeTime } from "../lib/formatRelativeTime";
 import type { Booking } from "../lib/types";
@@ -103,7 +104,11 @@ export function BookingRow({ booking, expanded, onToggle }: Props) {
 
         {/* Status */}
         <span className="shrink-0">
-          <StatusBadge status={booking.status} />
+          {booking.status === "cancelled" ? (
+            <CancellationBadge cancelledBy={booking.cancelledBy} />
+          ) : (
+            <StatusBadge status={booking.status} />
+          )}
         </span>
 
         {/* City */}

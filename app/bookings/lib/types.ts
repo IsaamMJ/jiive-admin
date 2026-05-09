@@ -28,6 +28,8 @@ export interface Booking {
   refundStatus: string;      // 'none' | 'requested' | 'processed' | …
   thyrocareOrderId: string | null;
   thyrocareLeadId: string | null;
+  cancelledBy: "user" | "thyrocare" | null;
+  cancellationReason: string | null;
   user: BookingUser;
   address: BookingAddress;
 }

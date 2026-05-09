@@ -23,11 +23,13 @@ function StatTile({
   label,
   value,
   accent,
+  subline,
 }: {
   icon: React.ComponentType<{ size?: number; className?: string }>;
   label: string;
   value: number;
   accent: string;
+  subline?: string;
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-border/60 bg-card/60 backdrop-blur-sm flex-1 min-w-0">
@@ -39,6 +41,9 @@ function StatTile({
           {label}
         </span>
         <span className="text-xl font-bold tabular-nums leading-tight">{value}</span>
+        {subline && (
+          <span className="text-[10px] text-muted-foreground/80 truncate mt-0.5">{subline}</span>
+        )}
       </div>
     </div>
   );
@@ -95,14 +100,27 @@ export function DayGroupedView() {
       ["pending_payment", "confirmed", "phlebo_assigned", "payment_completed", "booking_confirmed"].includes(b.status)
     );
     const completed = all.filter((b) => b.status === "completed").length;
-    const cancelled = all.filter((b) => b.status === "cancelled" || b.status === "failed").length;
+    const cancelledList = all.filter((b) => b.status === "cancelled" || b.status === "failed");
+    const cancelledByUser = cancelledList.filter((b) => b.cancelledBy === "user").length;
+    const cancelledByLab = cancelledList.filter((b) => b.cancelledBy === "thyrocare").length;
     return {
       today: todayBookings.length,
       upcoming: upcomingActive.length,
       completed,
-      cancelled,
+      cancelled: cancelledList.length,
+      cancelledByUser,
+      cancelledByLab,
     };
   }, [allBuckets, today]);
+
+  const cancelSubline =
+    stats.cancelled > 0
+      ? `${stats.cancelledByUser}u · ${stats.cancelledByLab}l${
+          stats.cancelled - stats.cancelledByUser - stats.cancelledByLab > 0
+            ? ` · ${stats.cancelled - stats.cancelledByUser - stats.cancelledByLab}?`
+            : ""
+        }`
+      : undefined;
 
   if (loadingInitial) {
     return (
@@ -159,6 +177,7 @@ export function DayGroupedView() {
           label="Cancelled"
           value={stats.cancelled}
           accent="bg-rose-500/15 text-rose-400"
+          subline={cancelSubline}
         />
       </div>
 
