@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { User2, MapPin, Beaker, ExternalLink, RotateCcw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { CopyableId } from "./CopyableId";
 import type { Booking } from "../lib/types";
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -95,9 +96,7 @@ export function BookingExpandedPanel({ booking }: { booking: Booking }) {
             label="Thyrocare Order ID"
             value={
               booking.thyrocareOrderId ? (
-                <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-muted/70">
-                  {booking.thyrocareOrderId}
-                </span>
+                <CopyableId value={booking.thyrocareOrderId} />
               ) : (
                 <span className="text-muted-foreground">—</span>
               )
@@ -107,9 +106,7 @@ export function BookingExpandedPanel({ booking }: { booking: Booking }) {
             label="Thyrocare Lead ID"
             value={
               booking.thyrocareLeadId ? (
-                <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-muted/70">
-                  {booking.thyrocareLeadId}
-                </span>
+                <CopyableId value={booking.thyrocareLeadId} />
               ) : (
                 <span className="text-muted-foreground">—</span>
               )
@@ -117,7 +114,7 @@ export function BookingExpandedPanel({ booking }: { booking: Booking }) {
           />
           <Field
             label="Booking ID"
-            value={<span className="font-mono text-[10px] text-muted-foreground break-all">{booking.id}</span>}
+            value={<CopyableId value={booking.id} className="text-[10px]" />}
           />
           <Field label="Source" value={<span className="capitalize">{booking.source}</span>} />
           {booking.refundStatus && booking.refundStatus !== "none" && (

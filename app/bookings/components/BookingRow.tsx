@@ -3,6 +3,7 @@
 import { ChevronDown, Phone, MapPin, Clock } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { BookingExpandedPanel } from "./BookingExpandedPanel";
+import { CopyableId } from "./CopyableId";
 import { formatRelativeTime } from "../lib/formatRelativeTime";
 import type { Booking } from "../lib/types";
 import { cn } from "@/lib/utils";
@@ -92,15 +93,12 @@ export function BookingRow({ booking, expanded, onToggle }: Props) {
         </div>
 
         {/* Thyrocare ID */}
-        <span
-          className={cn(
-            "text-xs font-mono hidden md:inline-flex items-center px-2 py-0.5 rounded-md tabular-nums",
-            booking.thyrocareOrderId
-              ? "bg-muted/70 text-foreground/80 border border-border/40"
-              : "text-muted-foreground/40"
+        <span className="hidden md:inline-flex">
+          {booking.thyrocareOrderId ? (
+            <CopyableId value={booking.thyrocareOrderId} />
+          ) : (
+            <span className="text-xs font-mono text-muted-foreground/40">—</span>
           )}
-        >
-          {booking.thyrocareOrderId ?? "—"}
         </span>
 
         {/* Status */}
