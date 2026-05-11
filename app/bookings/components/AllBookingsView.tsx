@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
+import { ChevronDown } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import {
@@ -13,6 +14,8 @@ import {
 import api from "@/lib/api";
 import type { Booking } from "../lib/types";
 import { CancellationBadge } from "./CancellationBadge";
+import { BookingExpandedPanel } from "./BookingExpandedPanel";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
 const STATUS_OPTIONS = ["all", "pending_payment", "confirmed", "cancelled", "completed"];
@@ -30,13 +33,13 @@ export function AllBookingsView() {
   const [cancelSource, setCancelSource] = useState("all");
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fetch = (s: string, src: string, o: number) => {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(o) });
     if (s !== "all") params.set("status", s);
     if (s === "cancelled" && src !== "all") {
-      // Backend expects cancelledBy=null for unknown; spec says this is queryable.
       params.set("cancelledBy", src === "unknown" ? "null" : src);
     }
     api.get(`/bookings?${params}`).then((r) => {
@@ -52,10 +55,15 @@ export function AllBookingsView() {
     setStatus(v ?? "all");
     setCancelSource("all");
     setOffset(0);
+    setExpandedId(null);
   };
   const handleCancelSource = (v: string | null) => {
     setCancelSource(v ?? "all");
     setOffset(0);
+    setExpandedId(null);
+  };
+  const toggleRow = (id: string) => {
+    setExpandedId((cur) => (cur === id ? null : id));
   };
 
   return (
@@ -97,6 +105,7 @@ export function AllBookingsView() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-8"></TableHead>
                 <TableHead>Patient</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead>Test</TableHead>
@@ -109,26 +118,50 @@ export function AllBookingsView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {bookings.map((b) => (
-                <TableRow key={b.id}>
-                  <TableCell className="font-medium">{b.patientName}</TableCell>
-                  <TableCell className="text-muted-foreground font-mono text-xs">{b.user.whatsappPhone}</TableCell>
-                  <TableCell className="capitalize">{b.testType.replace(/_/g, " ")}</TableCell>
-                  <TableCell className="text-xs">{new Date(b.appointmentDate).toLocaleDateString()}</TableCell>
-                  <TableCell className="text-xs">{b.appointmentTime}</TableCell>
-                  <TableCell>
-                    {b.status === "cancelled"
-                      ? <CancellationBadge cancelledBy={b.cancelledBy} />
-                      : <StatusBadge status={b.status} />}
-                  </TableCell>
-                  <TableCell className="text-right">₹{(b.amount / 100).toLocaleString()}</TableCell>
-                  <TableCell className="text-xs">{b.address?.city ?? "—"}</TableCell>
-                  <TableCell className="text-xs font-mono">{b.thyrocareOrderId ?? "—"}</TableCell>
-                </TableRow>
-              ))}
+              {bookings.map((b) => {
+                const expanded = expandedId === b.id;
+                return (
+                  <Fragment key={b.id}>
+                    <TableRow
+                      onClick={() => toggleRow(b.id)}
+                      className={cn("cursor-pointer", expanded && "bg-accent/40")}
+                    >
+                      <TableCell>
+                        <ChevronDown
+                          size={14}
+                          className={cn(
+                            "text-muted-foreground/60 transition-transform duration-200",
+                            !expanded && "-rotate-90"
+                          )}
+                        />
+                      </TableCell>
+                      <TableCell className="font-medium">{b.patientName}</TableCell>
+                      <TableCell className="text-muted-foreground font-mono text-xs">{b.user.whatsappPhone}</TableCell>
+                      <TableCell className="capitalize">{b.testType.replace(/_/g, " ")}</TableCell>
+                      <TableCell className="text-xs">{new Date(b.appointmentDate).toLocaleDateString()}</TableCell>
+                      <TableCell className="text-xs">{b.appointmentTime}</TableCell>
+                      <TableCell>
+                        {b.status === "cancelled"
+                          ? <CancellationBadge cancelledBy={b.cancelledBy} />
+                          : <StatusBadge status={b.status} />}
+                      </TableCell>
+                      <TableCell className="text-right">₹{(b.amount / 100).toLocaleString()}</TableCell>
+                      <TableCell className="text-xs">{b.address?.city ?? "—"}</TableCell>
+                      <TableCell className="text-xs font-mono">{b.thyrocareOrderId ?? "—"}</TableCell>
+                    </TableRow>
+                    {expanded && (
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell colSpan={10} className="p-0">
+                          <BookingExpandedPanel booking={b} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
+              })}
               {bookings.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center text-muted-foreground py-8">No bookings found</TableCell>
+                  <TableCell colSpan={10} className="text-center text-muted-foreground py-8">No bookings found</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -137,13 +170,13 @@ export function AllBookingsView() {
       )}
 
       <div className="flex items-center justify-between">
-        <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>
+        <Button variant="outline" size="sm" disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - PAGE_SIZE)); setExpandedId(null); }}>
           Previous
         </Button>
         <span className="text-sm text-muted-foreground">
           {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
         </span>
-        <Button variant="outline" size="sm" disabled={offset + PAGE_SIZE >= total} onClick={() => setOffset(offset + PAGE_SIZE)}>
+        <Button variant="outline" size="sm" disabled={offset + PAGE_SIZE >= total} onClick={() => { setOffset(offset + PAGE_SIZE); setExpandedId(null); }}>
           Next
         </Button>
       </div>

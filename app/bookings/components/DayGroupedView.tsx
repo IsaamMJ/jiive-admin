@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { Loader2, ChevronDown, CalendarDays, CheckCircle2, Clock4, XCircle } from "lucide-react";
+import { Loader2, ChevronDown, ChevronUp, CalendarDays, CheckCircle2, Clock4, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import api from "@/lib/api";
@@ -51,39 +51,50 @@ function StatTile({
 
 export function DayGroupedView() {
   const [today] = useState<string>(todayLocal);
-  const [windows, setWindows] = useState<DayBucket[][]>([]);
+  // Future windows: index 0 = today..today+6, index 1 = today+7..today+13, ...
+  const [futureWindows, setFutureWindows] = useState<DayBucket[][]>([]);
+  // Past windows: index 0 = today-7..today-1, index 1 = today-14..today-8, ...
+  const [pastWindows, setPastWindows] = useState<DayBucket[][]>([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingPast, setLoadingPast] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchWindow = useCallback(async (windowIndex: number): Promise<DayBucket[]> => {
-    const from = localDateNDaysFrom(new Date(`${today}T00:00:00`), windowIndex * WINDOW_DAYS);
-    const to = localDateNDaysFrom(new Date(`${today}T00:00:00`), windowIndex * WINDOW_DAYS + WINDOW_DAYS - 1);
-    const params = new URLSearchParams({
-      appointmentFrom: from,
-      appointmentTo: to,
-      limit: String(FETCH_LIMIT),
-    });
-    const r = await api.get(`/bookings?${params}`);
-    const bookings: Booking[] = r.data.bookings ?? [];
-    return groupByDay(bookings, from, WINDOW_DAYS);
-  }, [today]);
+  // Direction: +1 means future (offset = futureIdx*7..+6), -1 means past (offset = -((pastIdx+1)*7)..-(pastIdx*7+1))
+  const fetchWindow = useCallback(
+    async (direction: 1 | -1, index: number): Promise<DayBucket[]> => {
+      const base = new Date(`${today}T00:00:00`);
+      const startOffset =
+        direction === 1 ? index * WINDOW_DAYS : -((index + 1) * WINDOW_DAYS);
+      const from = localDateNDaysFrom(base, startOffset);
+      const to = localDateNDaysFrom(base, startOffset + WINDOW_DAYS - 1);
+      const params = new URLSearchParams({
+        appointmentFrom: from,
+        appointmentTo: to,
+        limit: String(FETCH_LIMIT),
+      });
+      const r = await api.get(`/bookings?${params}`);
+      const bookings: Booking[] = r.data.bookings ?? [];
+      return groupByDay(bookings, from, WINDOW_DAYS);
+    },
+    [today]
+  );
 
   useEffect(() => {
     let cancelled = false;
     setLoadingInitial(true);
-    fetchWindow(0)
-      .then((buckets) => { if (!cancelled) setWindows([buckets]); })
+    fetchWindow(1, 0)
+      .then((buckets) => { if (!cancelled) setFutureWindows([buckets]); })
       .catch((e) => { if (!cancelled) setError(e?.message ?? "Failed to load"); })
       .finally(() => { if (!cancelled) setLoadingInitial(false); });
     return () => { cancelled = true; };
   }, [fetchWindow]);
 
-  const loadMore = async () => {
+  const loadMoreFuture = async () => {
     setLoadingMore(true);
     try {
-      const next = await fetchWindow(windows.length);
-      setWindows((w) => [...w, next]);
+      const next = await fetchWindow(1, futureWindows.length);
+      setFutureWindows((w) => [...w, next]);
     } catch (e: unknown) {
       setError((e as Error)?.message ?? "Failed to load");
     } finally {
@@ -91,16 +102,34 @@ export function DayGroupedView() {
     }
   };
 
-  const allBuckets = useMemo(() => windows.flat(), [windows]);
+  const loadMorePast = async () => {
+    setLoadingPast(true);
+    try {
+      const prev = await fetchWindow(-1, pastWindows.length);
+      setPastWindows((w) => [...w, prev]);
+    } catch (e: unknown) {
+      setError((e as Error)?.message ?? "Failed to load");
+    } finally {
+      setLoadingPast(false);
+    }
+  };
+
+  // Render order: oldest past window first → newest past → future windows in order.
+  // pastWindows[0] is the most recent past block (today-7..today-1), so we reverse.
+  const allBuckets = useMemo(() => {
+    const past = [...pastWindows].reverse().flat(); // oldest → newest
+    return [...past, ...futureWindows.flat()];
+  }, [pastWindows, futureWindows]);
 
   const stats = useMemo(() => {
     const todayBookings = allBuckets.find((b) => b.date === today)?.bookings ?? [];
-    const all = allBuckets.flatMap((b) => b.bookings);
-    const upcomingActive = all.filter((b) =>
+    // Stats only count today + future (don't double-count if user loads past).
+    const futureOnly = futureWindows.flat().flatMap((b) => b.bookings);
+    const upcomingActive = futureOnly.filter((b) =>
       ["pending_payment", "confirmed", "phlebo_assigned", "payment_completed", "booking_confirmed"].includes(b.status)
     );
-    const completed = all.filter((b) => b.status === "completed").length;
-    const cancelledList = all.filter((b) => b.status === "cancelled" || b.status === "failed");
+    const completed = futureOnly.filter((b) => b.status === "completed").length;
+    const cancelledList = futureOnly.filter((b) => b.status === "cancelled" || b.status === "failed");
     const cancelledByUser = cancelledList.filter((b) => b.cancelledBy === "user").length;
     const cancelledByLab = cancelledList.filter((b) => b.cancelledBy === "thyrocare").length;
     return {
@@ -111,7 +140,7 @@ export function DayGroupedView() {
       cancelledByUser,
       cancelledByLab,
     };
-  }, [allBuckets, today]);
+  }, [allBuckets, futureWindows, today]);
 
   const cancelSubline =
     stats.cancelled > 0
@@ -181,6 +210,29 @@ export function DayGroupedView() {
         />
       </div>
 
+      {/* Load previous */}
+      <div className="flex justify-center">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={loadMorePast}
+          disabled={loadingPast}
+          className="gap-2 rounded-full px-5"
+        >
+          {loadingPast ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              Loading previous 7 days
+            </>
+          ) : (
+            <>
+              <ChevronUp size={14} />
+              Load previous 7 days
+            </>
+          )}
+        </Button>
+      </div>
+
       {/* Day sections */}
       <div className="flex flex-col gap-4">
         {allBuckets.map((bucket) => (
@@ -188,12 +240,12 @@ export function DayGroupedView() {
         ))}
       </div>
 
-      {/* Load more */}
+      {/* Load next */}
       <div className="flex justify-center pt-2 pb-6">
         <Button
           variant="outline"
           size="sm"
-          onClick={loadMore}
+          onClick={loadMoreFuture}
           disabled={loadingMore}
           className="gap-2 rounded-full px-5"
         >
