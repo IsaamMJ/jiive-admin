@@ -8,7 +8,8 @@ import api from "@/lib/api";
 import { DaySection } from "./DaySection";
 import { groupByDay } from "../lib/groupByDay";
 import { localDateNDaysFrom } from "../lib/dayLabels";
-import type { Booking, DayBucket } from "../lib/types";
+import { normalizeBookings } from "../lib/normalizeBooking";
+import type { DayBucket } from "../lib/types";
 import { cn } from "@/lib/utils";
 
 const WINDOW_DAYS = 7;
@@ -74,7 +75,7 @@ export function DayGroupedView() {
         limit: String(FETCH_LIMIT),
       });
       const r = await api.get(`/bookings?${params}`);
-      const bookings: Booking[] = r.data.bookings ?? [];
+      const bookings = normalizeBookings(r.data.bookings);
       return groupByDay(bookings, from, WINDOW_DAYS);
     },
     [today]

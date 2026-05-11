@@ -15,6 +15,7 @@ import api from "@/lib/api";
 import type { Booking } from "../lib/types";
 import { CancellationBadge } from "./CancellationBadge";
 import { BookingExpandedPanel } from "./BookingExpandedPanel";
+import { normalizeBookings } from "../lib/normalizeBooking";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
@@ -43,7 +44,7 @@ export function AllBookingsView() {
       params.set("cancelledBy", src === "unknown" ? "null" : src);
     }
     api.get(`/bookings?${params}`).then((r) => {
-      setBookings(r.data.bookings);
+      setBookings(normalizeBookings(r.data.bookings));
       setTotal(r.data.total);
       setLoading(false);
     });
