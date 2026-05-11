@@ -12,10 +12,9 @@ export function normalizeBooking(raw: Record<string, unknown>): Booking {
     (raw.cancelled_by as string | null | undefined) ??
     null;
 
-  let cancelledBy: Booking["cancelledBy"] = null;
-  if (cancelledByRaw === "user" || cancelledByRaw === "thyrocare") {
-    cancelledBy = cancelledByRaw;
-  }
+  // Accept any string from backend ('user', 'thyrocare', 'admin:<uuid>'). Empty string → null.
+  const cancelledBy: Booking["cancelledBy"] =
+    typeof cancelledByRaw === "string" && cancelledByRaw.length > 0 ? cancelledByRaw : null;
 
   const cancellationReason =
     (raw.cancellationReason as string | null | undefined) ??

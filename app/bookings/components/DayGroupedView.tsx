@@ -133,6 +133,9 @@ export function DayGroupedView() {
     const cancelledList = futureOnly.filter((b) => b.status === "cancelled" || b.status === "failed");
     const cancelledByUser = cancelledList.filter((b) => b.cancelledBy === "user").length;
     const cancelledByLab = cancelledList.filter((b) => b.cancelledBy === "thyrocare").length;
+    const cancelledByAdmin = cancelledList.filter(
+      (b) => typeof b.cancelledBy === "string" && b.cancelledBy.startsWith("admin")
+    ).length;
     return {
       today: todayBookings.length,
       upcoming: upcomingActive.length,
@@ -140,17 +143,20 @@ export function DayGroupedView() {
       cancelled: cancelledList.length,
       cancelledByUser,
       cancelledByLab,
+      cancelledByAdmin,
     };
   }, [allBuckets, futureWindows, today]);
 
-  const cancelSubline =
-    stats.cancelled > 0
-      ? `${stats.cancelledByUser}u · ${stats.cancelledByLab}l${
-          stats.cancelled - stats.cancelledByUser - stats.cancelledByLab > 0
-            ? ` · ${stats.cancelled - stats.cancelledByUser - stats.cancelledByLab}?`
-            : ""
-        }`
-      : undefined;
+  const cancelSubline = (() => {
+    if (stats.cancelled === 0) return undefined;
+    const parts: string[] = [];
+    if (stats.cancelledByUser) parts.push(`${stats.cancelledByUser}u`);
+    if (stats.cancelledByLab) parts.push(`${stats.cancelledByLab}l`);
+    if (stats.cancelledByAdmin) parts.push(`${stats.cancelledByAdmin}a`);
+    const unknown = stats.cancelled - stats.cancelledByUser - stats.cancelledByLab - stats.cancelledByAdmin;
+    if (unknown > 0) parts.push(`${unknown}?`);
+    return parts.join(" · ");
+  })();
 
   if (loadingInitial) {
     return (
