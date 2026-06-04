@@ -209,17 +209,22 @@ export default function UserDetailPage() {
               if (msg.type === "template") {
                 const failed = msg.status?.toLowerCase() === "failed";
                 return (
-                  <div key={i} className="flex justify-center my-1">
-                    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/50 px-3 py-1 text-xs text-muted-foreground">
-                      <Badge
-                        variant="outline"
-                        className={`px-1.5 py-0 text-[10px] ${failed ? "border-red-500/30 bg-red-500/15 text-red-400" : "border-blue-500/30 bg-blue-500/15 text-blue-400"}`}
-                      >
-                        Template
-                      </Badge>
-                      <span className="font-medium text-foreground/80">{msg.templateName}</span>
-                      <span className={failed ? "text-red-400" : "text-green-400"}>· {msg.status}</span>
-                      <span>· {new Date(msg.createdAt).toLocaleString()}</span>
+                  <div key={i} className="flex justify-end">
+                    <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-primary text-primary-foreground px-4 py-2 text-sm">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <Badge
+                          variant="outline"
+                          className={`px-1.5 py-0 text-[10px] ${failed ? "border-red-500/40 bg-red-500/20 text-red-300" : "border-primary-foreground/30 bg-primary-foreground/15 text-primary-foreground/90"}`}
+                        >
+                          Template
+                        </Badge>
+                        <span className="text-[10px] text-primary-foreground/70">{msg.templateName}</span>
+                        {failed && <span className="text-[10px] text-red-300">· failed</span>}
+                      </div>
+                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                      <p className="text-xs mt-1 text-primary-foreground/60">
+                        {new Date(msg.createdAt).toLocaleString()}
+                      </p>
                     </div>
                   </div>
                 );
