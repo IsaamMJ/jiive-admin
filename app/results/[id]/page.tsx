@@ -25,6 +25,8 @@ interface ResultDetail {
   elevatedFlag: boolean;
   overflowCapped: boolean;
   formulaVersion: string;
+  retestReminderOptIn: boolean;
+  retestReminderSentAt: string | null;
   createdAt: string;
   user: { id: string; whatsappPhone: string; name: string };
   booking: { patientName: string; appointmentDate: string; appointmentTime: string };
@@ -87,6 +89,15 @@ export default function ResultDetailPage() {
             <div><p className="text-muted-foreground">Date</p><p>{new Date(result.createdAt).toLocaleDateString()}</p></div>
             <div><p className="text-muted-foreground">Patient</p>
               <Link href={`/users/${result.user.id}`} className="text-primary hover:underline">{result.booking.patientName}</Link>
+            </div>
+            <div><p className="text-muted-foreground">Retest reminder</p>
+              {result.retestReminderSentAt ? (
+                <p className="text-green-400">Sent {new Date(result.retestReminderSentAt).toLocaleDateString()}</p>
+              ) : result.retestReminderOptIn ? (
+                <p className="text-blue-400">Opted in</p>
+              ) : (
+                <p className="text-muted-foreground">—</p>
+              )}
             </div>
           </CardContent>
         </Card>

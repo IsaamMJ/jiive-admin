@@ -58,7 +58,10 @@ interface UserDetail {
     lastWhatsappActivity: string;
     creditBalance: { balance: number; updatedAt: string } | null;
   };
-  conversations: { direction: string; content: string; messageType: string; createdAt: string }[];
+  conversations: (
+    | { type?: "chat"; direction: string; content: string; messageType?: string; createdAt: string }
+    | { type: "template"; direction: "outbound"; content: string; templateName: string; status: string; createdAt: string }
+  )[];
   bookings: {
     id: string; patientName: string; testType: string; appointmentDate: string;
     appointmentTime: string; status: string; amount: number; address: { city: string; pincode: number };
@@ -67,6 +70,7 @@ interface UserDetail {
   results: {
     id: string; testType: string; calculatedAge: string; chronologicalAge: string;
     ageDelta: string; status: string; createdAt: string;
+    retestReminderOptIn: boolean; retestReminderSentAt: string | null;
   }[];
 }
 
@@ -201,16 +205,36 @@ export default function UserDetailPage() {
           <div className="flex flex-col gap-2 max-h-[600px] overflow-y-auto pr-1">
             {conversations.length === 0 ? (
               <p className="text-muted-foreground text-sm">No conversations.</p>
-            ) : conversations.map((msg, i) => (
-              <div key={i} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${msg.direction === "outbound" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                  <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
-                    {new Date(msg.createdAt).toLocaleString()}
-                  </p>
+            ) : conversations.map((msg, i) => {
+              if (msg.type === "template") {
+                const failed = msg.status?.toLowerCase() === "failed";
+                return (
+                  <div key={i} className="flex justify-center my-1">
+                    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/50 px-3 py-1 text-xs text-muted-foreground">
+                      <Badge
+                        variant="outline"
+                        className={`px-1.5 py-0 text-[10px] ${failed ? "border-red-500/30 bg-red-500/15 text-red-400" : "border-blue-500/30 bg-blue-500/15 text-blue-400"}`}
+                      >
+                        Template
+                      </Badge>
+                      <span className="font-medium text-foreground/80">{msg.templateName}</span>
+                      <span className={failed ? "text-red-400" : "text-green-400"}>· {msg.status}</span>
+                      <span>· {new Date(msg.createdAt).toLocaleString()}</span>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div key={i} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${msg.direction === "outbound" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                    <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
+                      {new Date(msg.createdAt).toLocaleString()}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </TabsContent>
 
@@ -260,11 +284,12 @@ export default function UserDetailPage() {
                   <TableHead>Delta</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Date</TableHead>
+                  <TableHead>Reminder</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {results.length === 0 ? (
-                  <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
                 ) : results.map((r) => (
                   <TableRow key={r.id} className="cursor-pointer hover:bg-accent">
                     <TableCell>
@@ -277,6 +302,15 @@ export default function UserDetailPage() {
                     <TableCell className={parseFloat(r.ageDelta) < 0 ? "text-green-400" : "text-red-400"}>{r.ageDelta ?? "—"}</TableCell>
                     <TableCell><StatusBadge status={r.status} /></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleDateString()}</TableCell>
+                    <TableCell className="text-xs">
+                      {r.retestReminderSentAt ? (
+                        <span className="text-green-400">Sent {new Date(r.retestReminderSentAt).toLocaleDateString()}</span>
+                      ) : r.retestReminderOptIn ? (
+                        <span className="text-blue-400">Opted in</span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
