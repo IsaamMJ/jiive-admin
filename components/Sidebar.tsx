@@ -14,6 +14,7 @@ import {
   LineChart,
   Coins,
   Package,
+  PackageCheck,
   Zap,
   ScrollText,
 } from "lucide-react";
@@ -24,6 +25,7 @@ const nav = [
   { href: "/users", label: "Users", icon: Users },
   { href: "/bookings", label: "Bookings", icon: CalendarCheck },
   { href: "/results", label: "Results", icon: FlaskConical },
+  { href: "/packages", label: "Packages", icon: PackageCheck },
   { href: "/credits/balances", label: "Credit Balances", icon: Coins },
   { href: "/credits/packs", label: "Credit Packs", icon: Package },
   { href: "/credits/action-costs", label: "Action Costs", icon: Zap },
