@@ -7,10 +7,14 @@ import { AdminLayout } from "@/components/AdminLayout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Check, X, Pencil } from "lucide-react";
+import { Check, X, Pencil, Plus } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -40,6 +44,14 @@ export default function PackagesPage() {
   const [priceError, setPriceError] = useState("");
   const [saving, setSaving] = useState(false);
   const [togglingType, setTogglingType] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addForm, setAddForm] = useState({
+    testType: "", displayName: "", thyrocareSkuId: "", price: "",
+    skuType: "OFFER", description: "", requiresFasting: true,
+    fastingHours: "12", displayOrder: "", isActive: false,
+  });
+  const [addError, setAddError] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -79,6 +91,64 @@ export default function PackagesPage() {
     }
   };
 
+  const openAdd = () => {
+    setAddForm({
+      testType: "", displayName: "", thyrocareSkuId: "", price: "",
+      skuType: "OFFER", description: "", requiresFasting: true,
+      fastingHours: "12", displayOrder: String(packages.length), isActive: false,
+    });
+    setAddError("");
+    setAddOpen(true);
+  };
+
+  const submitAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddError("");
+    const fail = (msg: string) => setAddError(msg);
+
+    const testType = addForm.testType.trim().toLowerCase();
+    if (!/^[a-z0-9_]+$/.test(testType)) return fail("testType must be lowercase letters, digits, or underscores");
+    if (!addForm.displayName.trim()) return fail("Display name required");
+    if (!addForm.thyrocareSkuId.trim()) return fail("Thyrocare SKU required");
+
+    const rupeeValue = parseFloat(addForm.price);
+    if (!Number.isFinite(rupeeValue) || rupeeValue < 0) return fail("Enter a price ≥ 0");
+    const pricePaise = Math.round(rupeeValue * 100);
+
+    const fastingHours = parseInt(addForm.fastingHours, 10);
+    if (!Number.isInteger(fastingHours) || fastingHours < 0 || fastingHours > 24) return fail("Fasting hours must be 0–24");
+
+    const displayOrder = parseInt(addForm.displayOrder, 10);
+    if (!Number.isInteger(displayOrder) || displayOrder < 0) return fail("Display order must be ≥ 0");
+
+    const body = {
+      testType,
+      displayName: addForm.displayName.trim(),
+      thyrocareSkuId: addForm.thyrocareSkuId.trim(),
+      pricePaise,
+      skuType: addForm.skuType,
+      description: addForm.description.trim() || undefined,
+      requiresFasting: addForm.requiresFasting,
+      fastingHours,
+      displayOrder,
+      isActive: addForm.isActive,
+    };
+
+    setCreating(true);
+    try {
+      await api.post("/packages", body);
+      toast.success(`Created ${body.displayName}${body.isActive ? "" : " (inactive)"}`);
+      setAddOpen(false);
+      load();
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 409) return fail(`A package with testType "${testType}" already exists`);
+      setAddError((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Create failed");
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const savePrice = async (p: Package) => {
     setPriceError("");
     const rupeeValue = parseFloat(priceInput);
@@ -107,9 +177,14 @@ export default function PackagesPage() {
   return (
     <AdminLayout title="Packages">
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-muted-foreground">
-          Customer-facing price for each bookable Thyrocare package. Editing a price affects new bookings only — existing bookings keep their captured amount.
-        </p>
+        <div className="flex items-start justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            Customer-facing price for each bookable Thyrocare package. Editing a price affects new bookings only — existing bookings keep their captured amount.
+          </p>
+          <Button size="sm" className="shrink-0" onClick={openAdd}>
+            <Plus size={15} /> Add package
+          </Button>
+        </div>
 
         {loading ? (
           <div className="flex flex-col gap-2">
@@ -224,6 +299,92 @@ export default function PackagesPage() {
           </div>
         )}
       </div>
+
+      <Dialog open={addOpen} onOpenChange={(v) => { if (!creating) setAddOpen(v); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add package</DialogTitle>
+            <DialogDescription>
+              Creates a new bookable package. Only add a Thyrocare SKU confirmed live by Adhish — a wrong/inactive SKU makes orders fail at Thyrocare. New packages start inactive.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={submitAdd} className="flex flex-col gap-3 mt-1">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="testType">testType (slug)</Label>
+                <Input id="testType" placeholder="liver" value={addForm.testType}
+                  onChange={(e) => setAddForm({ ...addForm, testType: e.target.value })} required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="displayName">Display name</Label>
+                <Input id="displayName" placeholder="LIVER HEALTH" value={addForm.displayName}
+                  onChange={(e) => setAddForm({ ...addForm, displayName: e.target.value })} required />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="thyrocareSkuId">Thyrocare SKU</Label>
+                <Input id="thyrocareSkuId" placeholder="PROJ10628XX" value={addForm.thyrocareSkuId}
+                  onChange={(e) => setAddForm({ ...addForm, thyrocareSkuId: e.target.value })} required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="skuType">SKU type</Label>
+                <select id="skuType" value={addForm.skuType}
+                  onChange={(e) => setAddForm({ ...addForm, skuType: e.target.value })}
+                  className="h-9 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50">
+                  <option value="OFFER">OFFER</option>
+                  <option value="SSKU">SSKU</option>
+                  <option value="PSKU">PSKU</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="price">Price (₹)</Label>
+                <Input id="price" type="number" min={0} step="0.01" placeholder="1999" value={addForm.price}
+                  onChange={(e) => setAddForm({ ...addForm, price: e.target.value })} required />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="fastingHours">Fasting (h)</Label>
+                <Input id="fastingHours" type="number" min={0} max={24} value={addForm.fastingHours}
+                  onChange={(e) => setAddForm({ ...addForm, fastingHours: e.target.value })} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="displayOrder">Order</Label>
+                <Input id="displayOrder" type="number" min={0} value={addForm.displayOrder}
+                  onChange={(e) => setAddForm({ ...addForm, displayOrder: e.target.value })} />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="description">Description (optional)</Label>
+              <Input id="description" value={addForm.description}
+                onChange={(e) => setAddForm({ ...addForm, description: e.target.value })} />
+            </div>
+
+            <div className="flex items-center gap-6">
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={addForm.requiresFasting}
+                  onChange={(e) => setAddForm({ ...addForm, requiresFasting: e.target.checked })} />
+                <span className="text-sm">Requires fasting</span>
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={addForm.isActive}
+                  onChange={(e) => setAddForm({ ...addForm, isActive: e.target.checked })} />
+                <span className="text-sm">Active immediately</span>
+              </label>
+            </div>
+
+            {addError && <p className="text-sm text-destructive">{addError}</p>}
+            <div className="flex justify-end gap-2 mt-1">
+              <Button type="button" variant="ghost" disabled={creating} onClick={() => setAddOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={creating}>{creating ? "Creating…" : "Create package"}</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </AdminLayout>
   );
 }
