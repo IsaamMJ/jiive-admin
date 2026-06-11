@@ -7,13 +7,13 @@ import { AdminLayout } from "@/components/AdminLayout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Check, X, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 interface Package {
   testType: string;
@@ -39,6 +39,7 @@ export default function PackagesPage() {
   const [priceInput, setPriceInput] = useState("");
   const [priceError, setPriceError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [togglingType, setTogglingType] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -59,6 +60,23 @@ export default function PackagesPage() {
     setEditingType(null);
     setPriceInput("");
     setPriceError("");
+  };
+
+  const toggleActive = async (p: Package) => {
+    const next = !p.isActive;
+    setTogglingType(p.testType);
+    // optimistic flip
+    setPackages((prev) => prev.map((x) => (x.testType === p.testType ? { ...x, isActive: next } : x)));
+    try {
+      await api.patch(`/packages/${p.testType}`, { isActive: next });
+      toast.success(`${p.displayName} ${next ? "activated" : "deactivated"}`);
+    } catch (err: unknown) {
+      // revert on failure
+      setPackages((prev) => prev.map((x) => (x.testType === p.testType ? { ...x, isActive: p.isActive } : x)));
+      toast.error((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Update failed");
+    } finally {
+      setTogglingType(null);
+    }
   };
 
   const savePrice = async (p: Package) => {
@@ -131,7 +149,30 @@ export default function PackagesPage() {
                         {p.requiresFasting ? `${p.fastingHours}h` : "—"}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={p.isActive ? "default" : "secondary"}>{p.isActive ? "Active" : "Inactive"}</Badge>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={p.isActive}
+                            aria-label={`${p.isActive ? "Deactivate" : "Activate"} ${p.displayName}`}
+                            disabled={togglingType === p.testType}
+                            onClick={() => toggleActive(p)}
+                            className={cn(
+                              "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                              p.isActive ? "bg-primary" : "bg-muted-foreground/30"
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+                                p.isActive ? "translate-x-[18px]" : "translate-x-0.5"
+                              )}
+                            />
+                          </button>
+                          <span className={cn("text-xs", p.isActive ? "text-foreground" : "text-muted-foreground")}>
+                            {p.isActive ? "Active" : "Inactive"}
+                          </span>
+                        </div>
                       </TableCell>
                       <TableCell>
                         {editing ? (
