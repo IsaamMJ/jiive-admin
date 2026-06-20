@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -17,13 +18,20 @@ import {
   PackageCheck,
   Zap,
   ScrollText,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getToken } from "@/lib/auth";
+import api from "@/lib/api";
+
+const STUCK_HREF = "/stuck-bookings";
+const STUCK_POLL_MS = 60_000;
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/users", label: "Users", icon: Users },
   { href: "/bookings", label: "Bookings", icon: CalendarCheck },
+  { href: STUCK_HREF, label: "Stuck Bookings", icon: AlertTriangle },
   { href: "/results", label: "Results", icon: FlaskConical },
   { href: "/packages", label: "Packages", icon: PackageCheck },
   { href: "/credits/balances", label: "Credit Balances", icon: Coins },
@@ -39,6 +47,23 @@ const nav = [
 
 export function Sidebar({ className }: { className?: string }) {
   const pathname = usePathname();
+  const [stuckCount, setStuckCount] = useState(0);
+
+  useEffect(() => {
+    if (!getToken()) return;
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return;
+      api
+        .get<{ count: number }>("/bookings/stuck")
+        .then((r) => { if (!cancelled) setStuckCount(r.data.count ?? 0); })
+        .catch(() => { /* badge is best-effort; ignore transient failures */ });
+    };
+    poll();
+    const id = setInterval(poll, STUCK_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   return (
     <aside className={cn("flex flex-col w-60 bg-card border-r border-border min-h-screen py-6", className)}>
       <div className="px-6 mb-8">
@@ -59,7 +84,12 @@ export function Sidebar({ className }: { className?: string }) {
               )}
             >
               <Icon size={16} />
-              {label}
+              <span className="flex-1">{label}</span>
+              {href === STUCK_HREF && stuckCount > 0 && (
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-orange-500 px-1.5 text-xs font-semibold text-white">
+                  {stuckCount}
+                </span>
+              )}
             </Link>
           );
         })}
