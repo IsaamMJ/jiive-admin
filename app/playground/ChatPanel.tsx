@@ -151,10 +151,26 @@ function Bubble({ entry, isLast, streaming, onRegenerate }: BubbleProps) {
   const isError = !!entry.error;
   const isStopped = !!entry.stopped;
 
-  const copyText = () => {
-    navigator.clipboard.writeText(entry.text).then(() => {
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(entry.text);
       toast.success("Copied");
-    });
+    } catch {
+      // Fallback for denied permission / non-secure contexts.
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = entry.text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        toast.success("Copied");
+      } catch {
+        toast.error("Copy failed — select and copy manually");
+      }
+    }
   };
 
   return (
