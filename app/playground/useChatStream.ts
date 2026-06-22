@@ -18,6 +18,8 @@ export interface StreamCallbacks {
   onToken: (delta: string) => void;
   onDone: (payload: SseDonePayload) => void;
   onError: (payload: SseErrorPayload) => void;
+  /** Called when stop() is invoked mid-stream; receives whatever text accumulated so far. */
+  onAbort: (partialText: string, partialMeta: SseMetaPayload | null) => void;
 }
 
 export interface UseChatStreamReturn {
@@ -43,6 +45,10 @@ export function useChatStream(): UseChatStreamReturn {
     setStreaming(true);
 
     (async () => {
+      // Track accumulated text and meta here so the abort handler can access them.
+      let accumText = "";
+      let lastMeta: SseMetaPayload | null = null;
+
       try {
         const token = getToken();
         const res = await fetch(`${API_BASE}/llm-playground/chat`, {
@@ -105,15 +111,21 @@ export function useChatStream(): UseChatStreamReturn {
 
             switch (eventName) {
               case "meta":
-                callbacks.onMeta(payload as SseMetaPayload);
+                lastMeta = payload as SseMetaPayload;
+                callbacks.onMeta(lastMeta);
                 break;
-              case "token":
-                callbacks.onToken((payload as { delta: string }).delta ?? "");
+              case "token": {
+                const delta = (payload as { delta: string }).delta ?? "";
+                accumText += delta;
+                callbacks.onToken(delta);
                 break;
+              }
               case "done":
                 callbacks.onDone(payload as SseDonePayload);
                 break;
               case "error":
+                // Keep partial text: surface it via onError after partial text was already
+                // streamed via onToken; the page handles rendering the partial bubble.
                 callbacks.onError(payload as SseErrorPayload);
                 break;
             }
@@ -121,14 +133,23 @@ export function useChatStream(): UseChatStreamReturn {
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {
-          // User stopped — not an error.
+          // User stopped — commit whatever was accumulated so far.
+          // Only fire if this controller is still the current one (guards against a
+          // new send() racing with the finally of a previous one).
+          if (abortRef.current === controller || abortRef.current === null) {
+            callbacks.onAbort(accumText, lastMeta);
+          }
           return;
         }
         const message =
           err instanceof Error ? err.message : "Unknown streaming error";
         callbacks.onError({ error: "provider_error", message });
       } finally {
-        setStreaming(false);
+        // Only clear the streaming flag if we are still the active controller.
+        // A new send() already replaced abortRef.current, so we must not clobber it.
+        if (abortRef.current === controller) {
+          setStreaming(false);
+        }
       }
     })();
   };

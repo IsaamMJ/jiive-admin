@@ -1,10 +1,20 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
-import { Send, Square, ChevronDown, ChevronUp } from "lucide-react";
+import { useRef, useEffect, useState, useCallback } from "react";
+import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown } from "lucide-react";
+import { toast } from "sonner";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { TranscriptEntry, LlmModel, AwsState } from "./types";
+
+// Maximum prompt length accepted by the backend contract.
+const MAX_PROMPT_CHARS = 8000;
+// Show the char counter within this many chars of the limit.
+const COUNTER_WARN_THRESHOLD = 500;
+// Auto-scroll threshold — if the user is within this many px of the bottom, keep following.
+const SCROLL_BOTTOM_THRESHOLD = 80;
 
 interface Props {
   transcript: TranscriptEntry[];
@@ -17,7 +27,90 @@ interface Props {
   onStop: () => void;
   onStartBox: () => void; // called when user hits "Start box" inside an aws_offline error
   onToggleRag: () => void;
+  onRegenerate: () => void;
 }
+
+// ── Shared markdown styles ────────────────────────────────────────────────────
+
+const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+  // Headings — sensible size hierarchy inside a chat bubble
+  h1: ({ children }) => (
+    <h1 className="text-base font-semibold mt-3 mb-1 first:mt-0">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="text-sm font-semibold mt-2.5 mb-1 first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="text-sm font-medium mt-2 mb-0.5 first:mt-0">{children}</h3>
+  ),
+  // Paragraphs — let them breathe a little
+  p: ({ children }) => <p className="my-1 first:mt-0 last:mb-0">{children}</p>,
+  // Ordered and unordered lists
+  ul: ({ children }) => <ul className="my-1 ml-4 list-disc space-y-0.5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-1 ml-4 list-decimal space-y-0.5">{children}</ol>,
+  li: ({ children }) => <li className="pl-0.5">{children}</li>,
+  // Inline code
+  code: ({ className, children, ...rest }) => {
+    // Block code (inside <pre>) vs inline code
+    const isInline = !className;
+    if (isInline) {
+      return (
+        <code
+          className="rounded bg-muted-foreground/15 px-1 py-0.5 font-mono text-[0.82em]"
+          {...rest}
+        >
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className="font-mono text-[0.82em]" {...rest}>
+        {children}
+      </code>
+    );
+  },
+  // Code blocks — muted background, horizontal scroll, no syntax highlighter
+  pre: ({ children }) => (
+    <pre className="my-2 overflow-x-auto rounded-md border border-border bg-muted/60 px-3 py-2 text-xs leading-relaxed">
+      {children}
+    </pre>
+  ),
+  // Tables with borders
+  table: ({ children }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="w-full border-collapse text-xs">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="bg-muted/50">{children}</thead>,
+  th: ({ children }) => (
+    <th className="border border-border px-2 py-1 text-left font-medium">{children}</th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-border px-2 py-1">{children}</td>
+  ),
+  // Blockquote
+  blockquote: ({ children }) => (
+    <blockquote className="my-1 border-l-2 border-muted-foreground/30 pl-3 italic text-muted-foreground">
+      {children}
+    </blockquote>
+  ),
+  // Horizontal rule
+  hr: () => <hr className="my-2 border-border" />,
+  // Strong / em
+  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+};
+
+// Renders markdown for assistant messages (both streaming and committed).
+function AssistantMarkdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+      {text}
+    </ReactMarkdown>
+  );
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function RagSourcesBlock({ sources }: { sources: NonNullable<TranscriptEntry["ragSources"]> }) {
   const [open, setOpen] = useState(false);
@@ -25,6 +118,7 @@ function RagSourcesBlock({ sources }: { sources: NonNullable<TranscriptEntry["ra
     <div className="mt-2">
       <button
         type="button"
+        aria-expanded={open}
         className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
         onClick={() => setOpen((v) => !v)}
       >
@@ -45,12 +139,26 @@ function RagSourcesBlock({ sources }: { sources: NonNullable<TranscriptEntry["ra
   );
 }
 
-function Bubble({ entry }: { entry: TranscriptEntry }) {
+interface BubbleProps {
+  entry: TranscriptEntry;
+  isLast: boolean;
+  streaming: boolean;
+  onRegenerate: () => void;
+}
+
+function Bubble({ entry, isLast, streaming, onRegenerate }: BubbleProps) {
   const isUser = entry.role === "user";
   const isError = !!entry.error;
+  const isStopped = !!entry.stopped;
+
+  const copyText = () => {
+    navigator.clipboard.writeText(entry.text).then(() => {
+      toast.success("Copied");
+    });
+  };
 
   return (
-    <div className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
+    <div className={cn("group flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
       <div
         className={cn(
           "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm",
@@ -61,19 +169,61 @@ function Bubble({ entry }: { entry: TranscriptEntry }) {
               : "bg-muted text-foreground rounded-bl-sm",
         )}
       >
-        <p className="whitespace-pre-wrap break-words">{entry.text}</p>
+        {isUser ? (
+          <p className="whitespace-pre-wrap break-words">{entry.text}</p>
+        ) : (
+          <div className="break-words prose-sm prose-neutral dark:prose-invert max-w-none">
+            <AssistantMarkdown text={entry.text} />
+          </div>
+        )}
         {!isUser && entry.model && !isError && (
           <span className="mt-1 block text-[10px] text-muted-foreground uppercase tracking-wide">
             {entry.model === "aws" ? "AWS MedGemma" : "HuggingFace"}
+            {isStopped && (
+              <span className="ml-1.5 normal-case text-muted-foreground/70">⏹ stopped</span>
+            )}
           </span>
         )}
       </div>
+
+      {/* Copy + Regenerate actions — shown on hover (and always for the last message) */}
+      {!isUser && !isError && (
+        <div
+          className={cn(
+            "flex items-center gap-1 px-1 transition-opacity",
+            isLast ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          )}
+        >
+          <button
+            type="button"
+            aria-label="Copy answer"
+            onClick={copyText}
+            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+          >
+            <Copy size={11} />
+            Copy
+          </button>
+          {isLast && (
+            <button
+              type="button"
+              aria-label="Regenerate answer"
+              disabled={streaming}
+              onClick={onRegenerate}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <RotateCcw size={11} />
+              Regenerate
+            </button>
+          )}
+        </div>
+      )}
+
       {!isUser && entry.ragSources && entry.ragSources.length > 0 && (
         <div className="max-w-[85%] px-1">
           <RagSourcesBlock sources={entry.ragSources} />
         </div>
       )}
-      {!isUser && (entry.latencyMs !== undefined) && !isError && (
+      {!isUser && entry.latencyMs !== undefined && !isError && (
         <span className="px-1 text-[10px] text-muted-foreground tabular-nums">
           {entry.latencyMs}ms
           {entry.completionTokens !== undefined && ` · ${entry.completionTokens} tokens`}
@@ -87,10 +237,11 @@ function StreamingBubble({ text, model }: { text: string; model: LlmModel }) {
   return (
     <div className="flex flex-col items-start gap-1">
       <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-foreground">
-        <p className="whitespace-pre-wrap break-words">
-          {text}
-          <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60" />
-        </p>
+        <div className="break-words prose-sm prose-neutral dark:prose-invert max-w-none">
+          <AssistantMarkdown text={text} />
+        </div>
+        {/* Blinking cursor appended after the markdown */}
+        <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-foreground/60" />
         <span className="mt-1 block text-[10px] text-muted-foreground uppercase tracking-wide">
           {model === "aws" ? "AWS MedGemma" : "HuggingFace"}
         </span>
@@ -98,6 +249,8 @@ function StreamingBubble({ text, model }: { text: string; model: LlmModel }) {
     </div>
   );
 }
+
+// ── Main ChatPanel ────────────────────────────────────────────────────────────
 
 export function ChatPanel({
   transcript,
@@ -110,21 +263,57 @@ export function ChatPanel({
   onStop,
   onStartBox,
   onToggleRag,
+  onRegenerate,
 }: Props) {
   const [prompt, setPrompt] = useState("");
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Scroll to bottom when transcript or streaming text changes.
+  // Smart auto-scroll: track whether the user is near the bottom.
+  const isNearBottomRef = useRef(true);
+  const [showJumpButton, setShowJumpButton] = useState(false);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    bottomRef.current?.scrollIntoView({ behavior });
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD;
+    isNearBottomRef.current = nearBottom;
+    setShowJumpButton(!nearBottom);
+  }, []);
+
+  // Auto-scroll on new tokens — only if the user is near the bottom (instant for perf).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcript, streamingText]);
+    if (isNearBottomRef.current) {
+      scrollToBottom("auto");
+    }
+  }, [streamingText, scrollToBottom]);
+
+  // Smooth scroll when a new transcript entry lands (send or done).
+  useEffect(() => {
+    if (isNearBottomRef.current) {
+      scrollToBottom("smooth");
+    }
+  }, [transcript.length, scrollToBottom]);
 
   const handleSend = () => {
     const trimmed = prompt.trim();
-    if (!trimmed || streaming) return;
+    if (!trimmed || streaming || trimmed.length > MAX_PROMPT_CHARS) return;
     onSend(trimmed);
     setPrompt("");
+    // Reset textarea height back to single row and refocus.
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.focus();
+    }
+    // The user sent, so re-enable auto-follow.
+    isNearBottomRef.current = true;
+    setShowJumpButton(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -142,17 +331,39 @@ export function ChatPanel({
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   };
 
+  const charCount = prompt.length;
+  const overLimit = charCount > MAX_PROMPT_CHARS;
+  const showCounter = charCount >= MAX_PROMPT_CHARS - COUNTER_WARN_THRESHOLD;
+
+  // Find the last assistant entry (non-error) to attach Regenerate.
+  const lastAssistantIdx = (() => {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i].role === "assistant" && !transcript[i].error) return i;
+    }
+    return -1;
+  })();
+
   return (
     <div className="flex flex-col flex-1 min-h-0 rounded-lg border border-border bg-card">
       {/* Transcript */}
-      <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+      <div
+        ref={scrollAreaRef}
+        onScroll={handleScroll}
+        className="relative flex-1 overflow-y-auto p-4 flex flex-col gap-3"
+      >
         {transcript.length === 0 && !streaming && (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground py-16 text-center">
             <span>Ask a medical question — each message is independent (stateless).</span>
           </div>
         )}
-        {transcript.map((entry) => (
-          <Bubble key={entry.id} entry={entry} />
+        {transcript.map((entry, idx) => (
+          <Bubble
+            key={entry.id}
+            entry={entry}
+            isLast={idx === lastAssistantIdx && entry.role === "assistant"}
+            streaming={streaming}
+            onRegenerate={onRegenerate}
+          />
         ))}
         {streaming && streamingText !== "" && (
           <StreamingBubble text={streamingText} model={model} />
@@ -165,6 +376,23 @@ export function ChatPanel({
           </div>
         )}
         <div ref={bottomRef} />
+
+        {/* Jump-to-latest button — shown when user has scrolled up */}
+        {showJumpButton && (
+          <button
+            type="button"
+            aria-label="Jump to latest message"
+            onClick={() => {
+              isNearBottomRef.current = true;
+              setShowJumpButton(false);
+              scrollToBottom("smooth");
+            }}
+            className="sticky bottom-2 self-center flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-md hover:bg-accent hover:text-accent-foreground transition-colors"
+          >
+            <ArrowDown size={12} />
+            Jump to latest
+          </button>
+        )}
       </div>
 
       {/* aws_offline inline prompt */}
@@ -190,6 +418,8 @@ export function ChatPanel({
         <div className="flex items-center gap-2">
           <button
             type="button"
+            aria-pressed={useRag}
+            aria-label={`RAG grounding ${useRag ? "on" : "off"}`}
             onClick={onToggleRag}
             disabled={streaming}
             className={cn(
@@ -202,6 +432,17 @@ export function ChatPanel({
             RAG {useRag ? "on" : "off"}
           </button>
           <span className="text-xs text-muted-foreground">Shift+Enter for newline</span>
+          {/* Character counter — only shown near or over the limit */}
+          {showCounter && (
+            <span
+              className={cn(
+                "ml-auto text-xs tabular-nums",
+                overLimit ? "text-destructive font-medium" : "text-muted-foreground",
+              )}
+            >
+              {charCount}/{MAX_PROMPT_CHARS}
+            </span>
+          )}
         </div>
 
         <div className="flex items-end gap-2">
@@ -213,15 +454,23 @@ export function ChatPanel({
             disabled={streaming}
             placeholder="Ask a medical question…"
             rows={1}
+            aria-label="Prompt input"
             className={cn(
               "flex-1 resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm",
               "placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring",
               "disabled:opacity-50 disabled:cursor-not-allowed",
+              overLimit && "border-destructive focus:ring-destructive",
             )}
             style={{ minHeight: "40px", maxHeight: "160px" }}
           />
           {streaming ? (
-            <Button size="sm" variant="outline" onClick={onStop} className="shrink-0">
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label="Stop generation"
+              onClick={onStop}
+              className="shrink-0"
+            >
               <Square size={13} />
               Stop
             </Button>
@@ -229,7 +478,10 @@ export function ChatPanel({
             <Button
               size="sm"
               onClick={handleSend}
-              disabled={!prompt.trim()}
+              disabled={!prompt.trim() || overLimit}
+              title={overLimit ? `Prompt exceeds ${MAX_PROMPT_CHARS} character limit` : undefined}
+              aria-label="Send message"
+              aria-disabled={!prompt.trim() || overLimit}
               className="shrink-0"
             >
               <Send size={13} />

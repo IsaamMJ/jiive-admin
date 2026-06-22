@@ -92,7 +92,8 @@ export interface TranscriptEntry {
   latencyMs?: number;
   promptTokens?: number;
   completionTokens?: number;
-  error?: string; // error code or message
+  error?: string;   // error code or message
+  stopped?: boolean; // true when the user pressed Stop mid-stream
 }
 
 // Helpers ─────────────────────────────────────────────────────────────────────

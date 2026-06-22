@@ -123,10 +123,14 @@ export default function PlaygroundPage() {
   // Stores the meta payload from the current stream so onDone can access ragSources.
   const lastMetaRef = useRef<{ ragSources?: RagSource[] | null } | null>(null);
 
+  // The last user prompt, for Regenerate.
+  const lastPromptRef = useRef<string>("");
+
   const handleSend = (prompt: string) => {
     const userEntry: TranscriptEntry = { id: nextId(), role: "user", text: prompt };
     setTranscript((prev) => [...prev, userEntry]);
     setStreamingText("");
+    lastPromptRef.current = prompt;
 
     let accumText = "";
     const assistantId = nextId();
@@ -161,6 +165,22 @@ export default function PlaygroundPage() {
           ]);
           lastMetaRef.current = null;
         },
+        onAbort(partialText, partialMeta) {
+          // Commit whatever streamed so far as a stopped message.
+          setStreamingText("");
+          setTranscript((prev) => [
+            ...prev,
+            {
+              id: assistantId,
+              role: "assistant",
+              text: partialText,
+              model,
+              ragSources: partialMeta?.ragSources ?? lastMetaRef.current?.ragSources ?? null,
+              stopped: true,
+            },
+          ]);
+          lastMetaRef.current = null;
+        },
         onError(err) {
           setStreamingText("");
           const isAwsOffline = err.error === "aws_offline";
@@ -190,6 +210,12 @@ export default function PlaygroundPage() {
         },
       },
     );
+  };
+
+  // Regenerate: re-send the last user prompt with current settings.
+  const handleRegenerate = () => {
+    if (!lastPromptRef.current || streaming) return;
+    handleSend(lastPromptRef.current);
   };
 
   // ── Start box shortcut from ChatPanel ─────────────────────────────────────
@@ -267,6 +293,7 @@ export default function PlaygroundPage() {
             onStop={stop}
             onStartBox={handleStartBox}
             onToggleRag={() => setUseRag((v) => !v)}
+            onRegenerate={handleRegenerate}
           />
         </div>
       </div>

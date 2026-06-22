@@ -21,6 +21,8 @@ export function ModelSwitch({ model, awsState, hf, disabled, onChange }: Props) 
       <button
         key={value}
         type="button"
+        aria-pressed={active}
+        aria-label={`Switch to ${label} model`}
         disabled={itemDisabled}
         onClick={() => { if (!itemDisabled) onChange(value); }}
         className={cn(
