@@ -29,6 +29,21 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
+## Lattice (audits)
+
+This project is set up for [Lattice](https://github.com/IsaamMJ/Lattice) audits (drift, scale, security, flow).
+
+One-time shell alias so `lattice` resolves without the full path:
+
+```bash
+# bash
+echo 'alias lattice="$HOME/.claude/lattice/scripts/lattice"' >> ~/.bashrc
+# zsh
+echo 'alias lattice="$HOME/.claude/lattice/scripts/lattice"' >> ~/.zshrc
+```
+
+Then run `lattice help` from the project root, or use the slash commands inside Claude Code (`/audit-sweep`, `/audit`, `/scale-audit`, `/security-audit`, `/flow-audit`).
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.

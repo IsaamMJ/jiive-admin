@@ -43,3 +43,6 @@ next-env.d.ts
 # OMC / Claude state
 .omc/
 .claude/settings.local.json
+
+# Lattice (solo project — findings stay local)
+.lattice/

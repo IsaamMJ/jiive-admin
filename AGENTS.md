@@ -3,3 +3,41 @@
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
+
+<!-- BEGIN:lattice -->
+# Project Context (Lattice reads this file first — keep it current)
+
+## Purpose
+
+Internal admin dashboard for the Jiive platform. Operators use it to view bookings, manage users, run Thyrocare orders, monitor credits/usage, and inspect infra/audit data.
+
+## Module map
+
+Top-level directories under `app/` (Next.js App Router) and their owners:
+
+- `app/dashboard/` — landing dashboard (overview widgets, recent activity)
+- `app/users/` — user list + per-user profile (`[id]/page.tsx`)
+- `app/bookings/` — bookings (day-grouped + flat views, expandable detail)
+- `app/results/` — lab results list + per-result detail
+- `app/credits/` — balances, packs, action costs
+- `app/audit-log/` — audit trail viewer
+- `app/admins/` — admin user management
+- `app/infra/` — infra widgets (AI/knowledge service health)
+- `app/usage/` — AI cost + reliability metrics
+- `app/debug/` — internal debug tooling
+- `app/thyrocare/` — manual Thyrocare test-order trigger
+- `app/login/` — auth entry point
+- `components/` — shared UI (AdminLayout, Sidebar, TopBar, StatusBadge, ui/*)
+- `lib/` — `api.ts` (axios client + 401 interceptor), `auth.ts` (token storage), `utils.ts`
+- `docs/superpowers/` — design specs and implementation plans
+
+## Intentional decisions / removals
+
+<!-- Anything deliberately not built or deliberately removed goes here so audits don't flag it as drift. -->
+
+(none yet)
+
+## Living-truth note
+
+Lattice reads this file first. Keep it current — when modules are added, removed, or significantly restructured, update the module map and the intentional-decisions section in the same change.
+<!-- END:lattice -->
