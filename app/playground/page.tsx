@@ -262,7 +262,7 @@ export default function PlaygroundPage() {
             <Skeleton className="h-8 w-40" />
           ) : status ? (
             <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground">AWS MedGemma</span>
+              <span className="text-xs text-muted-foreground">MedGemma box</span>
               <AwsBoxControl aws={status.aws} onActionDone={handleBoxAction} />
             </div>
           ) : (
