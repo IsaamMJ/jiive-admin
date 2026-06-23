@@ -614,11 +614,6 @@ export function ChatPanel({
             label="Retrieval-Augmented Generation — pulls relevant facts from our own medical knowledge base (documents we've added) and gives them to the AI for this answer, instead of it relying only on what it learned in training. This is separate from chat history. It searches using your most recent message."
             side="top"
           />
-          {useRag && model === "aws" && (
-            <span className="text-[10px] text-amber-600 dark:text-amber-400">
-              AWS context is limited — long RAG answers may be cut short. Switch to HF for full responses.
-            </span>
-          )}
 
           {/* Patient picker */}
           <PatientPicker
@@ -741,15 +736,32 @@ export function ChatPanel({
         )}
 
         {/* Context-window indicator — shown once there's at least one completed turn */}
-        {latestPromptTokens !== undefined && (
-          <div className="flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">
-            <span>Context: ~{formatTokens(latestPromptTokens)} tokens</span>
-            <InfoTip
-              label="How much of the conversation the AI is currently 'seeing'. Long chats get trimmed — the oldest messages drop off first so it can keep the most recent context."
-              side="top"
-            />
-          </div>
-        )}
+        {latestPromptTokens !== undefined && (() => {
+          const limit = model === "aws" ? 8000 : 128000;
+          const pct = Math.min(100, (latestPromptTokens / limit) * 100);
+          const isWarn = pct >= 70;
+          const isDanger = pct >= 90;
+          return (
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground tabular-nums">
+              <span className="shrink-0">
+                Context: ~{formatTokens(latestPromptTokens)} / {formatTokens(limit)}
+              </span>
+              <div className="w-24 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    isDanger ? "bg-red-500" : isWarn ? "bg-amber-500" : "bg-green-500",
+                  )}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <InfoTip
+                label={`How much of the AI's context window is in use. ${model === "aws" ? "AWS MedGemma has an 8k token window." : "HuggingFace has a 128k token window."} When it fills up, older messages are compressed to make room.`}
+                side="top"
+              />
+            </div>
+          );
+        })()}
 
         <div className="flex items-end gap-2">
           <textarea

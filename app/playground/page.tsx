@@ -45,6 +45,15 @@ function saveConvPatient(convId: string, patientId: string) {
   localStorage.setItem(PATIENT_CONV_KEY, JSON.stringify(map));
 }
 
+const MODEL_CONV_KEY = "jiive_conv_model_v1";
+function getModelMap(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(MODEL_CONV_KEY) ?? "{}"); } catch { return {}; }
+}
+function saveConvModel(convId: string, model: string) {
+  const map = getModelMap(); map[convId] = model;
+  localStorage.setItem(MODEL_CONV_KEY, JSON.stringify(map));
+}
+
 /**
  * Build the `messages` array from transcript entries to send to the backend.
  * Rules (from backend contract):
@@ -178,9 +187,23 @@ export default function PlaygroundPage() {
     fetchStatus().then(() => { schedulePoll(); });
   }, [fetchStatus, schedulePoll]);
 
-  // ── Patient persistence ───────────────────────────────────────────────────
+  // ── Model + patient persistence ───────────────────────────────────────────
 
   const patientLocked = transcript.length > 0;
+  const modelLocked = transcript.length > 0;
+
+  const handleModelChange = useCallback((m: LlmModel) => {
+    setModel(m);
+    const convId = conversationIdRef.current;
+    if (convId) saveConvModel(convId, m);
+    if (m === "aws") {
+      if (status?.aws.state === "unconfigured") {
+        toast.info("AWS MedGemma is not configured.");
+      } else {
+        fetchStatus().then(() => schedulePoll());
+      }
+    }
+  }, [status, fetchStatus, schedulePoll]);
 
   const handlePatientChange = useCallback((id: string | null) => {
     activePatientIdRef.current = id;
@@ -220,6 +243,7 @@ export default function PlaygroundPage() {
             setActiveConvId(r.data.id);
             const pid = activePatientIdRef.current;
             if (pid) saveConvPatient(r.data.id, pid);
+            saveConvModel(r.data.id, model);
             fetchConversations();
           })
           .catch(() => { toast.error("Conversation autosave failed"); })
@@ -459,6 +483,8 @@ export default function PlaygroundPage() {
         const savedPatientId = getPatientMap()[id] ?? null;
         setActivePatientId(savedPatientId);
         activePatientIdRef.current = savedPatientId;
+        const savedModel = getModelMap()[id] as LlmModel | undefined;
+        if (savedModel) setModel(savedModel);
       })
       .catch(() => { toast.error("Failed to load conversation"); });
   }, [streaming]);
@@ -516,23 +542,18 @@ export default function PlaygroundPage() {
             {statusLoading ? (
               <Skeleton className="h-8 w-64" />
             ) : (
-              <ModelSwitch
-                model={model}
-                awsState={status?.aws.state ?? "unconfigured"}
-                hf={status?.hf ?? { configured: false }}
-                disabled={streaming}
-                onChange={(m) => {
-                  setModel(m);
-                  // Switching to AWS: refresh box status right away so the pill reflects reality.
-                  if (m === "aws") {
-                    if (status?.aws.state === "unconfigured") {
-                      toast.info("AWS MedGemma is not configured.");
-                    } else {
-                      fetchStatus().then(() => schedulePoll());
-                    }
-                  }
-                }}
-              />
+              <div className="flex items-center gap-2">
+                <ModelSwitch
+                  model={model}
+                  awsState={status?.aws.state ?? "unconfigured"}
+                  hf={status?.hf ?? { configured: false }}
+                  disabled={streaming || modelLocked}
+                  onChange={handleModelChange}
+                />
+                {modelLocked && (
+                  <span className="text-[10px] text-muted-foreground">· fixed to chat</span>
+                )}
+              </div>
             )}
 
             {statusLoading ? (
