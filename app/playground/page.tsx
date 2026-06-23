@@ -336,12 +336,35 @@ export default function PlaygroundPage() {
   );
 
   const handleSend = (prompt: string) => {
+    // If AWS box is clearly offline, show an instant error without a 31s API wait.
+    if (model === "aws" && status?.aws.state === "stopped") {
+      const uid = nextId();
+      const errorId = nextId();
+      setTranscript((prev) => [
+        ...prev,
+        { id: uid, role: "user", text: prompt },
+        { id: errorId, role: "assistant", text: "MedGemma box is offline — start it to use AWS.", model: "aws" as LlmModel, error: "aws_offline" },
+      ]);
+      return;
+    }
     const userEntry: TranscriptEntry = { id: nextId(), role: "user", text: prompt };
     // Append the user entry first so it's included in the messages array.
     const nextTranscript = [...transcript, userEntry];
     setTranscript(nextTranscript);
     sendWithTranscript(nextTranscript, model);
   };
+
+  const handleEdit = useCallback((entryId: string, newText: string) => {
+    if (streaming) return;
+    // Find the index of the user entry being edited.
+    const idx = transcript.findIndex((e) => e.id === entryId);
+    if (idx === -1) return;
+    const editedEntry: TranscriptEntry = { id: nextId(), role: "user", text: newText };
+    // Keep everything before the edited turn, then the new version.
+    const trimmed = [...transcript.slice(0, idx), editedEntry];
+    setTranscript(trimmed);
+    sendWithTranscript(trimmed, model);
+  }, [streaming, transcript, model, sendWithTranscript]);
 
   /**
    * Regenerate: drop the trailing assistant entry being regenerated, then
@@ -526,6 +549,7 @@ export default function PlaygroundPage() {
               onRegenerate={handleRegenerate}
               onSystemPromptChange={setSystemPrompt}
               onPatientChange={setActivePatientId}
+              onEdit={handleEdit}
             />
           </div>
         </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown, Settings2, X } from "lucide-react";
+import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown, Settings2, X, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -41,6 +41,8 @@ interface Props {
   onSystemPromptChange: (value: string) => void;
   /** Called when the patient selection changes (null = cleared). */
   onPatientChange: (id: string | null) => void;
+  /** Called when the user edits a prior message; trims transcript and re-sends. */
+  onEdit: (entryId: string, newText: string) => void;
 }
 
 // ── Shared markdown styles ────────────────────────────────────────────────────
@@ -158,12 +160,16 @@ interface BubbleProps {
   isLastEntry: boolean;
   streaming: boolean;
   onRegenerate: () => void;
+  onEdit: (entryId: string, newText: string) => void;
 }
 
-function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate }: BubbleProps) {
+function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate, onEdit }: BubbleProps) {
   const isUser = entry.role === "user";
   const isError = !!entry.error;
   const isStopped = !!entry.stopped;
+
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(entry.text);
 
   const copyText = async () => {
     try {
@@ -187,26 +193,71 @@ function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate }: BubbleP
     }
   };
 
+  if (isUser) {
+    return (
+      <div className={cn("group flex flex-col gap-1", "items-end")}>
+        {editing ? (
+          <div className="flex flex-col gap-2 max-w-[85%]">
+            <textarea
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (editText.trim()) { onEdit(entry.id, editText.trim()); setEditing(false); }
+                }
+                if (e.key === "Escape") { setEditing(false); setEditText(entry.text); }
+              }}
+              className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              rows={3}
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => { setEditing(false); setEditText(entry.text); }}
+                className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent transition-colors">
+                Cancel
+              </button>
+              <button type="button" disabled={!editText.trim()}
+                onClick={() => { if (editText.trim()) { onEdit(entry.id, editText.trim()); setEditing(false); } }}
+                className="rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors">
+                Save &amp; Send
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-end gap-1">
+            <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground">
+              <p className="whitespace-pre-wrap break-words">{entry.text}</p>
+            </div>
+            {/* Edit button — visible on hover */}
+            {!streaming && (
+              <button type="button" aria-label="Edit message"
+                onClick={() => { setEditing(true); setEditText(entry.text); }}
+                className="opacity-0 group-hover:opacity-100 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-all">
+                <Pencil size={11} />
+                Edit
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className={cn("group flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
+    <div className="group flex flex-col gap-1 items-start">
       <div
         className={cn(
           "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm",
-          isUser
-            ? "bg-primary text-primary-foreground rounded-br-sm"
-            : isError
-              ? "bg-destructive/10 text-destructive border border-destructive/20 rounded-bl-sm"
-              : "bg-muted text-foreground rounded-bl-sm",
+          isError
+            ? "bg-destructive/10 text-destructive border border-destructive/20 rounded-bl-sm"
+            : "bg-muted text-foreground rounded-bl-sm",
         )}
       >
-        {isUser ? (
-          <p className="whitespace-pre-wrap break-words">{entry.text}</p>
-        ) : (
-          <div className="break-words prose-sm prose-neutral dark:prose-invert max-w-none">
-            <AssistantMarkdown text={entry.text} />
-          </div>
-        )}
-        {!isUser && entry.model && !isError && (
+        <div className="break-words prose-sm prose-neutral dark:prose-invert max-w-none">
+          <AssistantMarkdown text={entry.text} />
+        </div>
+        {entry.model && !isError && (
           <span className="mt-1 block text-[10px] text-muted-foreground uppercase tracking-wide">
             {entry.model === "aws" ? "AWS MedGemma" : "HuggingFace"}
             {isStopped && (
@@ -217,7 +268,7 @@ function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate }: BubbleP
       </div>
 
       {/* Copy + Regenerate actions — shown on hover (and always for the last message) */}
-      {!isUser && !isError && (
+      {!isError && (
         <div
           className={cn(
             "flex items-center gap-1 px-1 transition-opacity",
@@ -249,7 +300,7 @@ function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate }: BubbleP
       )}
 
       {/* Retry on the most recent error (e.g. HF cold-start 503) — re-sends the last prompt. */}
-      {!isUser && isError && isLastEntry && (
+      {isError && isLastEntry && (
         <div className="flex items-center gap-1 px-1">
           <button
             type="button"
@@ -264,12 +315,12 @@ function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate }: BubbleP
         </div>
       )}
 
-      {!isUser && entry.ragSources && entry.ragSources.length > 0 && (
+      {entry.ragSources && entry.ragSources.length > 0 && (
         <div className="max-w-[85%] px-1">
           <RagSourcesBlock sources={entry.ragSources} />
         </div>
       )}
-      {!isUser && entry.latencyMs !== undefined && !isError && (
+      {entry.latencyMs !== undefined && !isError && (
         <span className="flex items-center gap-1 px-1 text-[10px] text-muted-foreground tabular-nums">
           {entry.latencyMs}ms
           {entry.completionTokens !== undefined && ` · ${entry.completionTokens} tokens`}
@@ -363,6 +414,7 @@ export function ChatPanel({
   onRegenerate,
   onSystemPromptChange,
   onPatientChange,
+  onEdit,
 }: Props) {
   const [prompt, setPrompt] = useState("");
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
@@ -482,6 +534,7 @@ export function ChatPanel({
             isLastEntry={idx === lastIdx}
             streaming={streaming}
             onRegenerate={onRegenerate}
+            onEdit={onEdit}
           />
         ))}
         {streaming && streamingText !== "" && (
