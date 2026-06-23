@@ -3,6 +3,7 @@
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LlmModel, AwsState, HfStatus } from "./types";
+import { InfoTip } from "./InfoTip";
 
 interface Props {
   model: LlmModel;
@@ -47,6 +48,10 @@ export function ModelSwitch({ model, awsState, hf, disabled, onChange }: Props) 
   return (
     <div className="flex items-center gap-2">
       <span className="text-xs font-medium text-muted-foreground">Model</span>
+      <InfoTip
+        label="Both options run the same medical AI (MedGemma) — AWS is the dedicated server, HuggingFace is a hosted backup. Answers should be similar."
+        side="bottom"
+      />
       <div
         role="radiogroup"
         aria-label="Model"

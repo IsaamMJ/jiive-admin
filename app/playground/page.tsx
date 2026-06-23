@@ -21,6 +21,7 @@ import type {
   ChatMessage,
 } from "./types";
 import { isTransitioning } from "./types";
+import { InfoTip } from "./InfoTip";
 
 // Poll every 10s during transitions / after a box action.
 const POLL_MS = 10_000;
@@ -345,6 +346,10 @@ export default function PlaygroundPage() {
           ) : status ? (
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">MedGemma box</span>
+              <InfoTip
+                label="The dedicated AI server. It costs ~$1/hour while running, so start it when testing AWS and stop it when done."
+                side="bottom"
+              />
               <AwsBoxControl aws={status.aws} onActionDone={handleBoxAction} />
             </div>
           ) : (

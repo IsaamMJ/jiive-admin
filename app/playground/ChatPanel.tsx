@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { TranscriptEntry, LlmModel, AwsState } from "./types";
+import { InfoTip } from "./InfoTip";
 
 // Maximum prompt length accepted by the backend contract.
 const MAX_PROMPT_CHARS = 8000;
@@ -264,9 +265,13 @@ function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate }: BubbleP
         </div>
       )}
       {!isUser && entry.latencyMs !== undefined && !isError && (
-        <span className="px-1 text-[10px] text-muted-foreground tabular-nums">
+        <span className="flex items-center gap-1 px-1 text-[10px] text-muted-foreground tabular-nums">
           {entry.latencyMs}ms
           {entry.completionTokens !== undefined && ` · ${entry.completionTokens} tokens`}
+          <InfoTip
+            label="How fast the AI replied, and how many pieces of text (tokens) it processed."
+            side="top"
+          />
         </span>
       )}
     </div>
@@ -433,6 +438,22 @@ export function ChatPanel({
 
   const lastIdx = transcript.length - 1;
 
+  // Context-window indicator: promptTokens from the most recent completed assistant turn.
+  // This value ≈ how much of the conversation the model "saw" that turn.
+  const latestPromptTokens = (() => {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      const e = transcript[i];
+      if (e.role === "assistant" && !e.error && e.promptTokens !== undefined) {
+        return e.promptTokens;
+      }
+    }
+    return undefined;
+  })();
+
+  /** Format a token count as "1.2k" for thousands or plain number below 1000. */
+  const formatTokens = (n: number): string =>
+    n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
   return (
     <div className="flex flex-col flex-1 min-h-0 rounded-lg border border-border bg-card">
       {/* Transcript */}
@@ -511,6 +532,10 @@ export function ChatPanel({
           >
             RAG {useRag ? "on" : "off"}
           </button>
+          <InfoTip
+            label="Retrieval-Augmented Generation — grounds answers in our own medical knowledge base instead of only the AI's memory. It searches using your most recent message."
+            side="top"
+          />
 
           {/* New chat — clears the transcript; disabled mid-stream */}
           <button
@@ -548,6 +573,10 @@ export function ChatPanel({
             )}
             {systemPromptOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
           </button>
+          <InfoTip
+            label="Background instructions that set how the AI behaves for every question (e.g. 'answer as a clinician'). Leave empty to use the built-in clinical default."
+            side="top"
+          />
 
           <span className="text-xs text-muted-foreground">Shift+Enter for newline</span>
           {/* Character counter — only shown near or over the limit */}
@@ -619,6 +648,17 @@ export function ChatPanel({
             <p className="text-[11px] text-muted-foreground">
               Empty means use the backend default. Applies to both models and to Regenerate.
             </p>
+          </div>
+        )}
+
+        {/* Context-window indicator — shown once there's at least one completed turn */}
+        {latestPromptTokens !== undefined && (
+          <div className="flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">
+            <span>Context: ~{formatTokens(latestPromptTokens)} tokens</span>
+            <InfoTip
+              label="How much of the conversation the AI is currently 'seeing'. Long chats get trimmed — the oldest messages drop off first so it can keep the most recent context."
+              side="top"
+            />
           </div>
         )}
 
