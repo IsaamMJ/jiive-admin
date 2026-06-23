@@ -37,11 +37,13 @@ export interface PatientBiomarker {
   referenceRange?: string;
 }
 
-/** One result within a booking — no PII. */
+/** One result within a booking — no PII.
+ * Numeric-looking fields arrive PRE-FORMATTED as strings from the backend
+ * (e.g. calculatedAge "39.0", ageDelta "+4.0") — render them directly, do not call .toFixed(). */
 export interface PatientResult {
-  calculatedAge: number;
+  calculatedAge: string | number;
   chronologicalAgeBand: string;
-  ageDelta: number;
+  ageDelta: string | number;
   elevatedFlag: boolean;
   biomarkers: PatientBiomarker[];
 }
@@ -61,7 +63,7 @@ export interface PatientDetail {
   deidentified: {
     sex: string;
     ageBand: string;
-    latestBioAge: number | null;
+    latestBioAge: string | number | null; // pre-formatted string from backend (e.g. "39.0")
     bookings: PatientBooking[];
   };
 }

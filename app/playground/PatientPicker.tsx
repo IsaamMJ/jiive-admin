@@ -328,7 +328,7 @@ function PatientPreview({ detail, loading, expanded, onToggle }: PreviewProps) {
       <p className="mt-1 leading-relaxed">
         {sex} · {ageBand}
         {latestBioAge !== null && latestBioAge !== undefined
-          ? ` · bio-age ${latestBioAge.toFixed(1)}`
+          ? ` · bio-age ${latestBioAge}`
           : ""}
         {bookingCount > 0
           ? ` · ${bookingCount} booking${bookingCount !== 1 ? "s" : ""}`
@@ -348,12 +348,11 @@ function PatientPreview({ detail, loading, expanded, onToggle }: PreviewProps) {
               {bk.results.map((res, ri) => (
                 <div key={ri} className="mt-1 pl-2 border-l border-border/60">
                   <p>
-                    Bio-age {res.calculatedAge.toFixed(1)}
+                    Bio-age {res.calculatedAge}
                     {" · "}
                     chron. band {res.chronologicalAgeBand}
                     {" · "}
-                    delta {res.ageDelta > 0 ? "+" : ""}
-                    {res.ageDelta.toFixed(1)}
+                    delta {res.ageDelta}
                     {res.elevatedFlag && (
                       <span className="ml-1 text-amber-600 font-medium">elevated</span>
                     )}
