@@ -15,13 +15,14 @@ interface Props {
 }
 
 export function AwsBoxControl({ aws, onActionDone }: Props) {
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<"start" | "stop" | null>(null);
 
+  const busy = busyAction !== null;
   const pill = awsStatePill(aws.state);
   const transitioning = isTransitioning(aws.state) || busy;
 
   const doAction = async (action: "start" | "stop") => {
-    setBusy(true);
+    setBusyAction(action);
     try {
       await api.post<BoxResponse>("/llm-playground/box", { action });
       onActionDone();
@@ -43,7 +44,7 @@ export function AwsBoxControl({ aws, onActionDone }: Props) {
         );
       }
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
@@ -62,7 +63,7 @@ export function AwsBoxControl({ aws, onActionDone }: Props) {
       return (
         <Button size="sm" variant="outline" disabled>
           <Loader2 size={13} className="animate-spin" />
-          {state === "pending" || busy ? "Starting…" : "Stopping…"}
+          {busyAction === "stop" || state === "stopping" ? "Stopping…" : "Starting…"}
         </Button>
       );
     }

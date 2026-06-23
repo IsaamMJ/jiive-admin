@@ -543,7 +543,7 @@ export default function PlaygroundPage() {
           {/* Info note */}
           <p className="text-sm text-muted-foreground max-w-2xl">
             Conversation context is kept within this chat — start a New chat to reset.
-            {!status?.hf.configured && (
+            {model === "hf" && !status?.hf.configured && (
               <span className={cn("ml-2 text-xs", "text-yellow-600")}>
                 HuggingFace endpoint not configured.
               </span>
