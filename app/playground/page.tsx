@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { ModelSwitch } from "./ModelSwitch";
 import { AwsBoxControl } from "./AwsBoxControl";
 import { ChatPanel } from "./ChatPanel";
+import { ConversationSidebar } from "./ConversationSidebar";
 import { useChatStream } from "./useChatStream";
 import type {
   LlmModel,
@@ -19,6 +20,8 @@ import type {
   RagSource,
   AwsState,
   ChatMessage,
+  ConversationSummary,
+  ConversationDetail,
 } from "./types";
 import { isTransitioning } from "./types";
 import { InfoTip } from "./InfoTip";
@@ -33,6 +36,26 @@ const MAX_POST_ACTION_POLLS = 18;
 let entryCounter = 0;
 const nextId = () => String(++entryCounter);
 
+/**
+ * Build the `messages` array from transcript entries to send to the backend.
+ * Rules (from backend contract):
+ *  - user entries → role "user"
+ *  - assistant entries that are NOT errors AND have non-whitespace content → role "assistant"
+ *    (include `stopped` partials — they carry real content the model should remember)
+ *  - error entries are excluded entirely
+ *  - system-role entries must NOT be included (backend drops them)
+ */
+function buildMessages(entries: TranscriptEntry[]): ChatMessage[] {
+  return entries.flatMap<ChatMessage>((entry) => {
+    if (entry.role === "user") {
+      return [{ role: "user", content: entry.text }];
+    }
+    // assistant: skip errors and empty/whitespace content
+    if (entry.error || !entry.text.trim()) return [];
+    return [{ role: "assistant", content: entry.text }];
+  });
+}
+
 export default function PlaygroundPage() {
   const [model, setModel] = useState<LlmModel>("hf");
   const [useRag, setUseRag] = useState(false);
@@ -45,6 +68,12 @@ export default function PlaygroundPage() {
 
   const [status, setStatus] = useState<PlaygroundStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
+
+  // Conversation history state
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const conversationIdRef = useRef<string | null>(null); // source-of-truth; state is mirror for rendering
+  const convCreateInFlightRef = useRef(false); // duplicate-create guard
 
   // Polling bookkeeping — kept in refs so the poll loop doesn't need to re-close over state.
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -68,6 +97,15 @@ export default function PlaygroundPage() {
         setStatusLoading(false);
         return null;
       });
+  }, []);
+
+  // ── Fetch conversation list ───────────────────────────────────────────────
+
+  const fetchConversations = useCallback(() => {
+    api
+      .get<ConversationSummary[]>("/llm-playground/conversations")
+      .then((r) => setConversations(r.data))
+      .catch(() => { /* silent */ });
   }, []);
 
   // ── Polling loop ─────────────────────────────────────────────────────────
@@ -114,6 +152,7 @@ export default function PlaygroundPage() {
       }
       schedulePoll();
     });
+    fetchConversations();
     return () => {
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
@@ -131,24 +170,38 @@ export default function PlaygroundPage() {
   // Stores the meta payload from the current stream so onDone can access ragSources.
   const lastMetaRef = useRef<{ ragSources?: RagSource[] | null } | null>(null);
 
-  /**
-   * Build the `messages` array from transcript entries to send to the backend.
-   * Rules (from backend contract):
-   *  - user entries → role "user"
-   *  - assistant entries that are NOT errors AND have non-whitespace content → role "assistant"
-   *    (include `stopped` partials — they carry real content the model should remember)
-   *  - error entries are excluded entirely
-   *  - system-role entries must NOT be included (backend drops them)
-   */
-  const buildMessages = (entries: TranscriptEntry[]): ChatMessage[] =>
-    entries.flatMap<ChatMessage>((entry) => {
-      if (entry.role === "user") {
-        return [{ role: "user", content: entry.text }];
+  // ── Auto-save upsert ─────────────────────────────────────────────────────
+
+  const upsertConversation = useCallback(
+    (entries: TranscriptEntry[]) => {
+      const saved = buildMessages(entries);
+      if (saved.length === 0) return; // nothing worth saving
+
+      const currentId = conversationIdRef.current;
+      if (currentId) {
+        // PATCH existing
+        api
+          .patch(`/llm-playground/conversations/${currentId}`, { messages: saved })
+          .catch(() => { toast.error("Conversation autosave failed"); });
+      } else {
+        // POST new — guard against duplicate creates
+        if (convCreateInFlightRef.current) return;
+        convCreateInFlightRef.current = true;
+        const firstUser = entries.find((e) => e.role === "user");
+        const title = firstUser ? firstUser.text.trim().slice(0, 60) : "Conversation";
+        api
+          .post<ConversationDetail>("/llm-playground/conversations", { title, messages: saved })
+          .then((r) => {
+            conversationIdRef.current = r.data.id;
+            setActiveConvId(r.data.id);
+            fetchConversations();
+          })
+          .catch(() => { toast.error("Conversation autosave failed"); })
+          .finally(() => { convCreateInFlightRef.current = false; });
       }
-      // assistant: skip errors and empty/whitespace content
-      if (entry.error || !entry.text.trim()) return [];
-      return [{ role: "assistant", content: entry.text }];
-    });
+    },
+    [fetchConversations],
+  );
 
   /**
    * Core send routine. Accepts the transcript to use for building messages
@@ -181,35 +234,38 @@ export default function PlaygroundPage() {
           },
           onDone(done) {
             setStreamingText("");
-            setTranscript((prev) => [
-              ...prev,
-              {
-                id: assistantId,
-                role: "assistant",
-                text: accumText,
-                model: currentModel,
-                ragSources: lastMetaRef.current?.ragSources ?? null,
-                latencyMs: done.latencyMs,
-                promptTokens: done.promptTokens,
-                completionTokens: done.completionTokens,
-              },
-            ]);
+            const assistantEntry: TranscriptEntry = {
+              id: assistantId,
+              role: "assistant",
+              text: accumText,
+              model: currentModel,
+              ragSources: lastMetaRef.current?.ragSources ?? null,
+              latencyMs: done.latencyMs,
+              promptTokens: done.promptTokens,
+              completionTokens: done.completionTokens,
+            };
+            setTranscript((prev) => [...prev, assistantEntry]);
+            // entriesForContext already has the user turn; build with the assistant entry appended
+            upsertConversation([...entriesForContext, assistantEntry]);
             lastMetaRef.current = null;
           },
           onAbort(partialText, partialMeta) {
             // Commit whatever streamed so far as a stopped message.
             setStreamingText("");
-            setTranscript((prev) => [
-              ...prev,
-              {
-                id: assistantId,
-                role: "assistant",
-                text: partialText,
-                model: currentModel,
-                ragSources: partialMeta?.ragSources ?? lastMetaRef.current?.ragSources ?? null,
-                stopped: true,
-              },
-            ]);
+            if (!partialText.trim()) {
+              lastMetaRef.current = null;
+              return; // nothing to save if stopped immediately with no content
+            }
+            const stoppedEntry: TranscriptEntry = {
+              id: assistantId,
+              role: "assistant",
+              text: partialText,
+              model: currentModel,
+              ragSources: partialMeta?.ragSources ?? lastMetaRef.current?.ragSources ?? null,
+              stopped: true,
+            };
+            setTranscript((prev) => [...prev, stoppedEntry]);
+            upsertConversation([...entriesForContext, stoppedEntry]);
             lastMetaRef.current = null;
           },
           onError(err) {
@@ -251,7 +307,7 @@ export default function PlaygroundPage() {
         },
       );
     },
-    [send, useRag, systemPrompt],
+    [send, useRag, systemPrompt, upsertConversation],
   );
 
   const handleSend = (prompt: string) => {
@@ -289,12 +345,53 @@ export default function PlaygroundPage() {
    * New chat: clear the transcript and streaming state.
    * Model, useRag, and systemPrompt settings are preserved.
    */
-  const handleNewChat = () => {
+  const handleNewChat = useCallback(() => {
     if (streaming) return;
     setTranscript([]);
     setStreamingText("");
     lastMetaRef.current = null;
-  };
+    conversationIdRef.current = null;
+    setActiveConvId(null);
+    convCreateInFlightRef.current = false;
+  }, [streaming]);
+
+  /**
+   * Open a conversation from history.
+   */
+  const handleOpenConversation = useCallback((id: string) => {
+    if (streaming) return;
+    api
+      .get<ConversationDetail>(`/llm-playground/conversations/${id}`)
+      .then((r) => {
+        // Reconstruct transcript entries from saved messages
+        const entries: TranscriptEntry[] = r.data.messages.map((m, i) => ({
+          id: `conv-${r.data.id}-${i}`,
+          role: m.role,
+          text: m.content,
+        }));
+        setTranscript(entries);
+        setStreamingText("");
+        lastMetaRef.current = null;
+        conversationIdRef.current = r.data.id;
+        setActiveConvId(r.data.id);
+      })
+      .catch(() => { toast.error("Failed to load conversation"); });
+  }, [streaming]);
+
+  /**
+   * Delete a conversation from history.
+   */
+  const handleDeleteConversation = useCallback((id: string) => {
+    api
+      .delete(`/llm-playground/conversations/${id}`)
+      .then(() => {
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+        if (conversationIdRef.current === id) {
+          handleNewChat();
+        }
+      })
+      .catch(() => { toast.error("Failed to delete conversation"); });
+  }, [handleNewChat]);
 
   // ── Start box shortcut from ChatPanel ─────────────────────────────────────
 
@@ -316,75 +413,88 @@ export default function PlaygroundPage() {
 
   return (
     <AdminLayout title="LLM Playground">
-      <div className="flex flex-col gap-4 h-full">
-        {/* Header bar: model switch + AWS box control */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {statusLoading ? (
-            <Skeleton className="h-8 w-64" />
-          ) : (
-            <ModelSwitch
-              model={model}
-              awsState={status?.aws.state ?? "unconfigured"}
-              hf={status?.hf ?? { configured: false }}
-              disabled={streaming}
-              onChange={(m) => {
-                setModel(m);
-                // Switching to AWS: refresh box status right away so the pill reflects reality.
-                if (m === "aws") {
-                  if (status?.aws.state === "unconfigured") {
-                    toast.info("AWS MedGemma is not configured.");
-                  } else {
-                    fetchStatus().then(() => schedulePoll());
+      <div className="flex gap-4 h-full min-h-0">
+        {/* Conversation history sidebar */}
+        <ConversationSidebar
+          conversations={conversations}
+          activeId={activeConvId}
+          streaming={streaming}
+          onNew={handleNewChat}
+          onOpen={handleOpenConversation}
+          onDelete={handleDeleteConversation}
+        />
+
+        {/* Main content */}
+        <div className="flex flex-col gap-4 flex-1 min-w-0 h-full">
+          {/* Header bar: model switch + AWS box control */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            {statusLoading ? (
+              <Skeleton className="h-8 w-64" />
+            ) : (
+              <ModelSwitch
+                model={model}
+                awsState={status?.aws.state ?? "unconfigured"}
+                hf={status?.hf ?? { configured: false }}
+                disabled={streaming}
+                onChange={(m) => {
+                  setModel(m);
+                  // Switching to AWS: refresh box status right away so the pill reflects reality.
+                  if (m === "aws") {
+                    if (status?.aws.state === "unconfigured") {
+                      toast.info("AWS MedGemma is not configured.");
+                    } else {
+                      fetchStatus().then(() => schedulePoll());
+                    }
                   }
-                }
-              }}
-            />
-          )}
-
-          {statusLoading ? (
-            <Skeleton className="h-8 w-40" />
-          ) : status ? (
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground">MedGemma box</span>
-              <InfoTip
-                label="The dedicated AI server. It costs ~$1/hour while running, so start it when testing AWS and stop it when done."
-                side="bottom"
+                }}
               />
-              <AwsBoxControl aws={status.aws} onActionDone={handleBoxAction} />
-            </div>
-          ) : (
-            <span className="text-xs text-muted-foreground">Status unavailable</span>
-          )}
-        </div>
+            )}
 
-        {/* Info note */}
-        <p className="text-sm text-muted-foreground max-w-2xl">
-          Conversation context is kept within this chat — start a New chat to reset.
-          {!status?.hf.configured && (
-            <span className={cn("ml-2 text-xs", "text-yellow-600")}>
-              HuggingFace endpoint not configured.
-            </span>
-          )}
-        </p>
+            {statusLoading ? (
+              <Skeleton className="h-8 w-40" />
+            ) : status ? (
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted-foreground">MedGemma box</span>
+                <InfoTip
+                  label="The dedicated AI server. It costs ~$1/hour while running, so start it when testing AWS and stop it when done."
+                  side="bottom"
+                />
+                <AwsBoxControl aws={status.aws} onActionDone={handleBoxAction} />
+              </div>
+            ) : (
+              <span className="text-xs text-muted-foreground">Status unavailable</span>
+            )}
+          </div>
 
-        {/* Chat panel */}
-        <div className="flex flex-col flex-1 min-h-0" style={{ minHeight: "500px" }}>
-          <ChatPanel
-            transcript={transcript}
-            streamingText={streamingText}
-            streaming={streaming}
-            model={model}
-            useRag={useRag}
-            awsState={status?.aws.state ?? "unconfigured"}
-            systemPrompt={systemPrompt}
-            onSend={handleSend}
-            onStop={stop}
-            onStartBox={handleStartBox}
-            onToggleRag={() => setUseRag((v) => !v)}
-            onRegenerate={handleRegenerate}
-            onSystemPromptChange={setSystemPrompt}
-            onNewChat={handleNewChat}
-          />
+          {/* Info note */}
+          <p className="text-sm text-muted-foreground max-w-2xl">
+            Conversation context is kept within this chat — start a New chat to reset.
+            {!status?.hf.configured && (
+              <span className={cn("ml-2 text-xs", "text-yellow-600")}>
+                HuggingFace endpoint not configured.
+              </span>
+            )}
+          </p>
+
+          {/* Chat panel */}
+          <div className="flex flex-col flex-1 min-h-0" style={{ minHeight: "500px" }}>
+            <ChatPanel
+              transcript={transcript}
+              streamingText={streamingText}
+              streaming={streaming}
+              model={model}
+              useRag={useRag}
+              awsState={status?.aws.state ?? "unconfigured"}
+              systemPrompt={systemPrompt}
+              defaultSystemPrompt={status?.defaultSystemPrompt ?? ""}
+              onSend={handleSend}
+              onStop={stop}
+              onStartBox={handleStartBox}
+              onToggleRag={() => setUseRag((v) => !v)}
+              onRegenerate={handleRegenerate}
+              onSystemPromptChange={setSystemPrompt}
+            />
+          </div>
         </div>
       </div>
     </AdminLayout>

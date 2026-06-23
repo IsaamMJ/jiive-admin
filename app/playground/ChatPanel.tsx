@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown, Settings2, X, MessageSquarePlus } from "lucide-react";
+import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown, Settings2, X } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -29,13 +29,13 @@ interface Props {
   useRag: boolean;
   awsState: AwsState;
   systemPrompt: string;
+  defaultSystemPrompt: string; // from backend status; shown read-only when override is empty
   onSend: (prompt: string) => void;
   onStop: () => void;
   onStartBox: () => void; // called when user hits "Start box" inside an aws_offline error
   onToggleRag: () => void;
   onRegenerate: () => void;
   onSystemPromptChange: (value: string) => void;
-  onNewChat: () => void;
 }
 
 // ── Shared markdown styles ────────────────────────────────────────────────────
@@ -349,13 +349,13 @@ export function ChatPanel({
   useRag,
   awsState,
   systemPrompt,
+  defaultSystemPrompt,
   onSend,
   onStop,
   onStartBox,
   onToggleRag,
   onRegenerate,
   onSystemPromptChange,
-  onNewChat,
 }: Props) {
   const [prompt, setPrompt] = useState("");
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
@@ -537,18 +537,6 @@ export function ChatPanel({
             side="top"
           />
 
-          {/* New chat — clears the transcript; disabled mid-stream */}
-          <button
-            type="button"
-            aria-label="New chat"
-            disabled={streaming}
-            onClick={onNewChat}
-            className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <MessageSquarePlus size={11} />
-            New chat
-          </button>
-
           {/* System prompt disclosure */}
           <button
             type="button"
@@ -645,9 +633,19 @@ export function ChatPanel({
               )}
               style={{ minHeight: "72px", maxHeight: "160px" }}
             />
-            <p className="text-[11px] text-muted-foreground">
-              Empty means use the backend default. Applies to both models and to Regenerate.
-            </p>
+            {!hasCustomSystemPrompt && defaultSystemPrompt && (
+              <div className="mt-1.5 rounded-md border border-border bg-muted/40 px-3 py-2">
+                <p className="mb-1 text-[11px] font-medium text-muted-foreground">Default prompt (in use)</p>
+                <div className="max-h-32 overflow-y-auto text-[11px] text-muted-foreground/80 whitespace-pre-wrap break-words">
+                  {defaultSystemPrompt}
+                </div>
+              </div>
+            )}
+            {hasCustomSystemPrompt && (
+              <p className="text-[11px] text-muted-foreground/70 italic">
+                Using your custom prompt — default overridden.
+              </p>
+            )}
           </div>
         )}
 

@@ -70,6 +70,21 @@ export interface HfStatus {
 export interface PlaygroundStatus {
   aws: AwsStatus;
   hf: HfStatus;
+  defaultSystemPrompt?: string;
+}
+
+// GET /llm-playground/conversations ──────────────────────────────────────────
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  messageCount: number;
+  updatedAt: string;
+  createdAt: string;
+}
+
+export interface ConversationDetail extends ConversationSummary {
+  messages: ChatMessage[];
 }
 
 // POST /llm-playground/box ────────────────────────────────────────────────────
