@@ -34,7 +34,13 @@ export function AwsBoxControl({ aws, onActionDone }: Props) {
       } else if (errorCode === "aws_not_configured") {
         toast.error("AWS instance not configured. Contact ops.");
       } else {
-        toast.error(resp?.message ?? `Box ${action} failed`);
+        const msg = resp?.message ?? "";
+        const isServerError = !msg || /internal server error/i.test(msg);
+        toast.error(
+          isServerError
+            ? `Box ${action} failed — backend error. Check with ops (AWS credentials / instance config).`
+            : msg,
+        );
       }
     } finally {
       setBusy(false);

@@ -507,14 +507,34 @@ export default function PlaygroundPage() {
             {statusLoading ? (
               <Skeleton className="h-8 w-40" />
             ) : status ? (
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground">MedGemma box</span>
-                <InfoTip
-                  label="The dedicated AI server. It costs ~$1/hour while running, so start it when testing AWS and stop it when done."
-                  side="bottom"
-                />
-                <AwsBoxControl aws={status.aws} onActionDone={handleBoxAction} />
-              </div>
+              model === "aws" ? (
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground">MedGemma box</span>
+                  <InfoTip
+                    label="The dedicated AI server. It costs ~$1/hour while running, so start it when testing AWS and stop it when done."
+                    side="bottom"
+                  />
+                  <AwsBoxControl aws={status.aws} onActionDone={handleBoxAction} />
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">HuggingFace</span>
+                  <InfoTip
+                    label="Hosted HuggingFace inference endpoint. Scale-to-zero: first message after idle may take ~1–2 min to warm up."
+                    side="bottom"
+                  />
+                  <span
+                    className={cn(
+                      "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+                      status.hf.configured
+                        ? "border-green-200 bg-green-50 text-green-700"
+                        : "border-yellow-200 bg-yellow-50 text-yellow-700",
+                    )}
+                  >
+                    {status.hf.configured ? "Configured" : "Not configured"}
+                  </span>
+                </div>
+              )
             ) : (
               <span className="text-xs text-muted-foreground">Status unavailable</span>
             )}
