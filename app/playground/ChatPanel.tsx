@@ -33,6 +33,7 @@ interface Props {
   defaultSystemPrompt: string; // from backend status; shown read-only when override is empty
   /** Currently selected de-identified patient id, or null. */
   patientId: string | null;
+  patientLocked?: boolean;
   onSend: (prompt: string) => void;
   onStop: () => void;
   onStartBox: () => void; // called when user hits "Start box" inside an aws_offline error
@@ -407,6 +408,7 @@ export function ChatPanel({
   systemPrompt,
   defaultSystemPrompt,
   patientId,
+  patientLocked,
   onSend,
   onStop,
   onStartBox,
@@ -606,6 +608,7 @@ export function ChatPanel({
           <PatientPicker
             patientId={patientId}
             disabled={streaming}
+            locked={patientLocked}
             onChange={onPatientChange}
           />
 

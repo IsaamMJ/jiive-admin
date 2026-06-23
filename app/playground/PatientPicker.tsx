@@ -11,6 +11,7 @@ interface Props {
   /** Currently selected patient id, or null if none. */
   patientId: string | null;
   disabled?: boolean;
+  locked?: boolean;
   onChange: (id: string | null) => void;
 }
 
@@ -22,7 +23,7 @@ interface Props {
  * - On selection also fetches GET /llm-playground/patients/:id to show a compact preview.
  * - Never sends or displays PII — only de-identified label / deidentified fields.
  */
-export function PatientPicker({ patientId, disabled, onChange }: Props) {
+export function PatientPicker({ patientId, disabled, locked, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [patients, setPatients] = useState<PatientSummary[]>([]);
@@ -38,6 +39,23 @@ export function PatientPicker({ patientId, disabled, onChange }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const autoFetchedRef = useRef<string | null>(null);
+
+  // Auto-restore: when patientId arrives externally (localStorage restore) but selectedSummary is null.
+  useEffect(() => {
+    if (patientId && !selectedSummary && autoFetchedRef.current !== patientId) {
+      autoFetchedRef.current = patientId;
+      setLoadingDetail(true);
+      api
+        .get<PatientDetail>(`/llm-playground/patients/${patientId}`)
+        .then((r) => {
+          setSelectedSummary({ id: r.data.id, label: r.data.label, summary: "" });
+          setDetail(r.data);
+        })
+        .catch(() => { autoFetchedRef.current = null; })
+        .finally(() => setLoadingDetail(false));
+    }
+  }, [patientId, selectedSummary]);
 
   // ── Fetch list (once, on first open) ─────────────────────────────────────
 
@@ -119,6 +137,7 @@ export function PatientPicker({ patientId, disabled, onChange }: Props) {
   };
 
   const clear = () => {
+    autoFetchedRef.current = null;
     setSelectedSummary(null);
     setDetail(null);
     setDetailExpanded(false);
@@ -147,15 +166,19 @@ export function PatientPicker({ patientId, disabled, onChange }: Props) {
           <span className="flex items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
             <UserRound size={11} className="shrink-0" />
             <span className="max-w-[160px] truncate">{selectedSummary.label}</span>
-            <button
-              type="button"
-              aria-label="Clear patient"
-              disabled={disabled}
-              onClick={clear}
-              className="ml-0.5 rounded hover:text-destructive transition-colors disabled:opacity-40"
-            >
-              <X size={11} />
-            </button>
+            {locked ? (
+              <span className="text-[10px] text-muted-foreground">· fixed to chat</span>
+            ) : (
+              <button
+                type="button"
+                aria-label="Clear patient"
+                disabled={disabled}
+                onClick={clear}
+                className="ml-0.5 rounded hover:text-destructive transition-colors disabled:opacity-40"
+              >
+                <X size={11} />
+              </button>
+            )}
           </span>
         ) : (
           /* Select button */
@@ -186,8 +209,8 @@ export function PatientPicker({ patientId, disabled, onChange }: Props) {
           side="top"
         />
 
-        {/* Open/close chip when a patient is already selected */}
-        {hasPatient && (
+        {/* Open/close chip when a patient is already selected — hidden when locked */}
+        {hasPatient && !locked && (
           <button
             ref={triggerRef}
             type="button"

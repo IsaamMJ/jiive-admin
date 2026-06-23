@@ -36,6 +36,15 @@ const MAX_POST_ACTION_POLLS = 18;
 let entryCounter = 0;
 const nextId = () => String(++entryCounter);
 
+const PATIENT_CONV_KEY = "jiive_conv_patients_v1";
+function getPatientMap(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(PATIENT_CONV_KEY) ?? "{}"); } catch { return {}; }
+}
+function saveConvPatient(convId: string, patientId: string) {
+  const map = getPatientMap(); map[convId] = patientId;
+  localStorage.setItem(PATIENT_CONV_KEY, JSON.stringify(map));
+}
+
 /**
  * Build the `messages` array from transcript entries to send to the backend.
  * Rules (from backend contract):
@@ -75,6 +84,7 @@ export default function PlaygroundPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const conversationIdRef = useRef<string | null>(null); // source-of-truth; state is mirror for rendering
+  const activePatientIdRef = useRef<string | null>(null);
   const convCreateInFlightRef = useRef(false); // duplicate-create guard
 
   // Polling bookkeeping — kept in refs so the poll loop doesn't need to re-close over state.
@@ -167,6 +177,17 @@ export default function PlaygroundPage() {
     fetchStatus().then(() => { schedulePoll(); });
   }, [fetchStatus, schedulePoll]);
 
+  // ── Patient persistence ───────────────────────────────────────────────────
+
+  const patientLocked = transcript.length > 0;
+
+  const handlePatientChange = useCallback((id: string | null) => {
+    activePatientIdRef.current = id;
+    setActivePatientId(id);
+    const convId = conversationIdRef.current;
+    if (convId && id) saveConvPatient(convId, id);
+  }, []);
+
   // ── Chat ─────────────────────────────────────────────────────────────────
 
   // Stores the meta payload from the current stream so onDone can access ragSources.
@@ -196,6 +217,8 @@ export default function PlaygroundPage() {
           .then((r) => {
             conversationIdRef.current = r.data.id;
             setActiveConvId(r.data.id);
+            const pid = activePatientIdRef.current;
+            if (pid) saveConvPatient(r.data.id, pid);
             fetchConversations();
           })
           .catch(() => { toast.error("Conversation autosave failed"); })
@@ -404,6 +427,7 @@ export default function PlaygroundPage() {
     conversationIdRef.current = null;
     setActiveConvId(null);
     setActivePatientId(null);
+    activePatientIdRef.current = null;
     convCreateInFlightRef.current = false;
   }, [streaming]);
 
@@ -427,7 +451,9 @@ export default function PlaygroundPage() {
         lastMetaRef.current = null;
         conversationIdRef.current = r.data.id;
         setActiveConvId(r.data.id);
-        setActivePatientId(null);
+        const savedPatientId = getPatientMap()[id] ?? null;
+        setActivePatientId(savedPatientId);
+        activePatientIdRef.current = savedPatientId;
       })
       .catch(() => { toast.error("Failed to load conversation"); });
   }, [streaming]);
@@ -562,13 +588,14 @@ export default function PlaygroundPage() {
               systemPrompt={systemPrompt}
               defaultSystemPrompt={status?.defaultSystemPrompt ?? ""}
               patientId={activePatientId}
+              patientLocked={patientLocked}
               onSend={handleSend}
               onStop={stop}
               onStartBox={handleStartBox}
               onToggleRag={() => setUseRag((v) => !v)}
               onRegenerate={handleRegenerate}
               onSystemPromptChange={setSystemPrompt}
-              onPatientChange={setActivePatientId}
+              onPatientChange={handlePatientChange}
               onEdit={handleEdit}
             />
           </div>
