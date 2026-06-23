@@ -18,6 +18,7 @@ export interface ChatRequest {
   maxTokens?: number;
   /** De-identified patient id. Backend injects context server-side; frontend never sends PII. */
   patientId?: string;
+  conversationId?: string;
 }
 
 // GET /llm-playground/patients ────────────────────────────────────────────────
@@ -78,6 +79,7 @@ export interface RagSource {
 export interface SseMetaPayload {
   model: LlmModel;
   ragSources?: RagSource[] | null;
+  ragError?: string;
 }
 
 export interface SseTokenPayload {
@@ -131,6 +133,8 @@ export interface ConversationSummary {
   messageCount: number;
   updatedAt: string;
   createdAt: string;
+  createdByName?: string;
+  isOwner: boolean;
 }
 
 export interface ConversationDetail extends ConversationSummary {
@@ -159,6 +163,7 @@ export interface TranscriptEntry {
   text: string;
   model?: LlmModel;
   ragSources?: RagSource[] | null;
+  ragError?: string;
   latencyMs?: number;
   promptTokens?: number;
   completionTokens?: number;

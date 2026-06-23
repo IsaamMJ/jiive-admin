@@ -83,6 +83,7 @@ export default function PlaygroundPage() {
   // Conversation history state
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [activeConvIsOwner, setActiveConvIsOwner] = useState(true);
   const conversationIdRef = useRef<string | null>(null); // source-of-truth; state is mirror for rendering
   const activePatientIdRef = useRef<string | null>(null);
   const convCreateInFlightRef = useRef(false); // duplicate-create guard
@@ -190,8 +191,8 @@ export default function PlaygroundPage() {
 
   // ── Chat ─────────────────────────────────────────────────────────────────
 
-  // Stores the meta payload from the current stream so onDone can access ragSources.
-  const lastMetaRef = useRef<{ ragSources?: RagSource[] | null } | null>(null);
+  // Stores the meta payload from the current stream so onDone can access ragSources + ragError.
+  const lastMetaRef = useRef<{ ragSources?: RagSource[] | null; ragError?: string } | null>(null);
 
   // ── Auto-save upsert ─────────────────────────────────────────────────────
 
@@ -248,10 +249,11 @@ export default function PlaygroundPage() {
           systemPrompt: systemPrompt.trim() || undefined,
           // Only ever send the id — backend injects de-identified context server-side.
           patientId: activePatientId ?? undefined,
+          conversationId: conversationIdRef.current ?? undefined,
         },
         {
           onMeta(meta) {
-            lastMetaRef.current = { ragSources: meta.ragSources };
+            lastMetaRef.current = { ragSources: meta.ragSources, ragError: meta.ragError };
             accumText = "";
             setStreamingText("");
           },
@@ -267,6 +269,7 @@ export default function PlaygroundPage() {
               text: accumText,
               model: currentModel,
               ragSources: lastMetaRef.current?.ragSources ?? null,
+              ragError: lastMetaRef.current?.ragError ?? undefined,
               latencyMs: done.latencyMs,
               promptTokens: done.promptTokens,
               completionTokens: done.completionTokens,
@@ -426,6 +429,7 @@ export default function PlaygroundPage() {
     lastMetaRef.current = null;
     conversationIdRef.current = null;
     setActiveConvId(null);
+    setActiveConvIsOwner(true);
     setActivePatientId(null);
     activePatientIdRef.current = null;
     convCreateInFlightRef.current = false;
@@ -451,6 +455,7 @@ export default function PlaygroundPage() {
         lastMetaRef.current = null;
         conversationIdRef.current = r.data.id;
         setActiveConvId(r.data.id);
+        setActiveConvIsOwner(r.data.isOwner ?? true);
         const savedPatientId = getPatientMap()[id] ?? null;
         setActivePatientId(savedPatientId);
         activePatientIdRef.current = savedPatientId;
@@ -589,6 +594,7 @@ export default function PlaygroundPage() {
               defaultSystemPrompt={status?.defaultSystemPrompt ?? ""}
               patientId={activePatientId}
               patientLocked={patientLocked}
+              isOwner={activeConvIsOwner}
               onSend={handleSend}
               onStop={stop}
               onStartBox={handleStartBox}

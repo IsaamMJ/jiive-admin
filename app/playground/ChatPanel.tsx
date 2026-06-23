@@ -44,6 +44,8 @@ interface Props {
   onPatientChange: (id: string | null) => void;
   /** Called when the user edits a prior message; trims transcript and re-sends. */
   onEdit: (entryId: string, newText: string) => void;
+  /** Whether the current user owns this conversation. Defaults to true. */
+  isOwner?: boolean;
 }
 
 // ── Shared markdown styles ────────────────────────────────────────────────────
@@ -160,11 +162,12 @@ interface BubbleProps {
   isLast: boolean;
   isLastEntry: boolean;
   streaming: boolean;
+  canEdit: boolean;
   onRegenerate: () => void;
   onEdit: (entryId: string, newText: string) => void;
 }
 
-function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate, onEdit }: BubbleProps) {
+function Bubble({ entry, isLast, isLastEntry, streaming, canEdit, onRegenerate, onEdit }: BubbleProps) {
   const isUser = entry.role === "user";
   const isError = !!entry.error;
   const isStopped = !!entry.stopped;
@@ -230,8 +233,8 @@ function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate, onEdit }:
             <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground">
               <p className="whitespace-pre-wrap break-words">{entry.text}</p>
             </div>
-            {/* Edit button — visible on hover */}
-            {!streaming && (
+            {/* Edit button — visible on hover, only when user owns the conversation */}
+            {!streaming && canEdit && (
               <button type="button" aria-label="Edit message"
                 onClick={() => { setEditing(true); setEditText(entry.text); }}
                 className="opacity-0 group-hover:opacity-100 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-all">
@@ -267,6 +270,12 @@ function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate, onEdit }:
           </span>
         )}
       </div>
+
+      {entry.ragError && (
+        <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
+          ⚠ Knowledge base lookup failed — answer not grounded in records.
+        </p>
+      )}
 
       {/* Copy + Regenerate actions — shown on hover (and always for the last message) */}
       {!isError && (
@@ -409,6 +418,7 @@ export function ChatPanel({
   defaultSystemPrompt,
   patientId,
   patientLocked,
+  isOwner = true,
   onSend,
   onStop,
   onStartBox,
@@ -535,6 +545,7 @@ export function ChatPanel({
             isLast={idx === lastIdx && entry.role === "assistant" && !entry.error}
             isLastEntry={idx === lastIdx}
             streaming={streaming}
+            canEdit={isOwner}
             onRegenerate={onRegenerate}
             onEdit={onEdit}
           />
@@ -576,6 +587,11 @@ export function ChatPanel({
       )}
 
       {/* Composer */}
+      {!isOwner ? (
+        <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground text-center">
+          View only — you can read this conversation but can&apos;t reply.
+        </div>
+      ) : (
       <div className="border-t border-border p-3 flex flex-col gap-2">
         {/* RAG toggle + system prompt disclosure + new chat + model note */}
         <div className="flex items-center gap-2">
@@ -786,6 +802,7 @@ export function ChatPanel({
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

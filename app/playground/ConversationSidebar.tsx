@@ -65,15 +65,20 @@ export function ConversationSidebar({ conversations, activeId, streaming, onNew,
             <div className="flex-1 min-w-0">
               <p className="truncate text-xs font-medium leading-tight">{conv.title}</p>
               <p className="text-[10px] text-muted-foreground">{formatDate(conv.updatedAt)}</p>
+              {!conv.isOwner && conv.createdByName && (
+                <p className="text-[10px] text-muted-foreground truncate">by {conv.createdByName}</p>
+              )}
             </div>
-            <button
-              type="button"
-              aria-label={`Delete conversation: ${conv.title}`}
-              onClick={(e) => { e.stopPropagation(); onDelete(conv.id); }}
-              className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
-            >
-              <Trash2 size={12} />
-            </button>
+            {conv.isOwner && (
+              <button
+                type="button"
+                aria-label={`Delete conversation: ${conv.title}`}
+                onClick={(e) => { e.stopPropagation(); onDelete(conv.id); }}
+                className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
           </div>
         ))}
       </div>
