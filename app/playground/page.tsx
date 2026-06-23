@@ -362,6 +362,8 @@ export default function PlaygroundPage() {
     }
     if (dropIdx === -1) return; // nothing to regenerate
     const trimmed = transcript.slice(0, dropIdx);
+    // Don't send if there are no user turns left to re-answer.
+    if (buildMessages(trimmed).length === 0) return;
     setTranscript(trimmed);
     sendWithTranscript(trimmed, model);
   };

@@ -64,13 +64,15 @@ export function useChatStream(): UseChatStreamReturn {
         // Pre-SSE HTTP error (400 / 401 / etc.) — parse JSON body and surface.
         if (!res.ok) {
           let message = `HTTP ${res.status}`;
+          let errorCode: string = "provider_error";
           try {
             const body = (await res.json()) as { message?: string; error?: string };
             message = body.message ?? body.error ?? message;
+            if (body.error) errorCode = body.error;
           } catch {
             // ignore parse error
           }
-          callbacks.onError({ error: "provider_error", message });
+          callbacks.onError({ error: errorCode as SseErrorPayload["error"], message });
           return;
         }
 
