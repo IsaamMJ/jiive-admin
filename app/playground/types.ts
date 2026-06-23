@@ -4,8 +4,13 @@ export type LlmModel = "aws" | "hf";
 
 // POST /llm-playground/chat ───────────────────────────────────────────────────
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface ChatRequest {
-  prompt: string;
+  messages: ChatMessage[];
   model: LlmModel;
   useRag: boolean;
   systemPrompt?: string;

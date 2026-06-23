@@ -18,6 +18,7 @@ import type {
   TranscriptEntry,
   RagSource,
   AwsState,
+  ChatMessage,
 } from "./types";
 import { isTransitioning } from "./types";
 
@@ -37,6 +38,9 @@ export default function PlaygroundPage() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [streamingText, setStreamingText] = useState("");
+
+  // lastMeta is tracked on the streaming assistant entry (used by onDone/onAbort).
+  // Stored in a ref so it doesn't cause re-renders on every token.
 
   const [status, setStatus] = useState<PlaygroundStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -126,108 +130,167 @@ export default function PlaygroundPage() {
   // Stores the meta payload from the current stream so onDone can access ragSources.
   const lastMetaRef = useRef<{ ragSources?: RagSource[] | null } | null>(null);
 
-  // The last user prompt, for Regenerate.
-  const lastPromptRef = useRef<string>("");
+  /**
+   * Build the `messages` array from transcript entries to send to the backend.
+   * Rules (from backend contract):
+   *  - user entries → role "user"
+   *  - assistant entries that are NOT errors AND have non-whitespace content → role "assistant"
+   *    (include `stopped` partials — they carry real content the model should remember)
+   *  - error entries are excluded entirely
+   *  - system-role entries must NOT be included (backend drops them)
+   */
+  const buildMessages = (entries: TranscriptEntry[]): ChatMessage[] =>
+    entries.flatMap<ChatMessage>((entry) => {
+      if (entry.role === "user") {
+        return [{ role: "user", content: entry.text }];
+      }
+      // assistant: skip errors and empty/whitespace content
+      if (entry.error || !entry.text.trim()) return [];
+      return [{ role: "assistant", content: entry.text }];
+    });
+
+  /**
+   * Core send routine. Accepts the transcript to use for building messages
+   * (caller passes the desired state, which may not yet be in React state).
+   */
+  const sendWithTranscript = useCallback(
+    (entriesForContext: TranscriptEntry[], currentModel: LlmModel) => {
+      const messages = buildMessages(entriesForContext);
+      let accumText = "";
+      const assistantId = nextId();
+      lastMetaRef.current = null;
+      setStreamingText("");
+
+      send(
+        {
+          messages,
+          model: currentModel,
+          useRag,
+          systemPrompt: systemPrompt.trim() || undefined,
+        },
+        {
+          onMeta(meta) {
+            lastMetaRef.current = { ragSources: meta.ragSources };
+            accumText = "";
+            setStreamingText("");
+          },
+          onToken(delta) {
+            accumText += delta;
+            setStreamingText(accumText);
+          },
+          onDone(done) {
+            setStreamingText("");
+            setTranscript((prev) => [
+              ...prev,
+              {
+                id: assistantId,
+                role: "assistant",
+                text: accumText,
+                model: currentModel,
+                ragSources: lastMetaRef.current?.ragSources ?? null,
+                latencyMs: done.latencyMs,
+                promptTokens: done.promptTokens,
+                completionTokens: done.completionTokens,
+              },
+            ]);
+            lastMetaRef.current = null;
+          },
+          onAbort(partialText, partialMeta) {
+            // Commit whatever streamed so far as a stopped message.
+            setStreamingText("");
+            setTranscript((prev) => [
+              ...prev,
+              {
+                id: assistantId,
+                role: "assistant",
+                text: partialText,
+                model: currentModel,
+                ragSources: partialMeta?.ragSources ?? lastMetaRef.current?.ragSources ?? null,
+                stopped: true,
+              },
+            ]);
+            lastMetaRef.current = null;
+          },
+          onError(err) {
+            setStreamingText("");
+            const msg = err.message ?? "";
+            const isAwsOffline = err.error === "aws_offline";
+            const isHfUnconfigured = err.error === "hf_not_configured";
+            // HuggingFace is scale-to-zero: a 503 / "service unavailable" / "loading" means the
+            // endpoint is cold-starting, not a real failure. Show that plainly instead of "503".
+            const isWarming =
+              currentModel === "hf" && /\b503\b|service unavailable|loading|warm/i.test(msg);
+            const errorText = isAwsOffline
+              ? "MedGemma box is offline — start it to use AWS."
+              : isHfUnconfigured
+                ? "HuggingFace endpoint is not configured."
+                : isWarming
+                  ? "HuggingFace model is warming up (scale-to-zero cold start, ~1–2 min). Hit Retry in a moment."
+                  : err.message;
+
+            setTranscript((prev) => [
+              ...prev,
+              {
+                id: nextId(),
+                role: "assistant",
+                text: errorText,
+                model: currentModel,
+                error: err.error,
+              },
+            ]);
+            if (isHfUnconfigured) {
+              toast.error("HuggingFace not configured — switch to AWS MedGemma.");
+            } else if (isWarming) {
+              toast.info("HuggingFace model is warming up — Retry in a moment.");
+            } else if (!isAwsOffline) {
+              toast.error(err.message);
+            }
+            lastMetaRef.current = null;
+          },
+        },
+      );
+    },
+    [send, useRag, systemPrompt],
+  );
 
   const handleSend = (prompt: string) => {
     const userEntry: TranscriptEntry = { id: nextId(), role: "user", text: prompt };
-    setTranscript((prev) => [...prev, userEntry]);
-    setStreamingText("");
-    lastPromptRef.current = prompt;
-
-    let accumText = "";
-    const assistantId = nextId();
-    lastMetaRef.current = null;
-
-    send(
-      { prompt, model, useRag, systemPrompt: systemPrompt.trim() || undefined },
-      {
-        onMeta(meta) {
-          lastMetaRef.current = { ragSources: meta.ragSources };
-          accumText = "";
-          setStreamingText("");
-        },
-        onToken(delta) {
-          accumText += delta;
-          setStreamingText(accumText);
-        },
-        onDone(done) {
-          setStreamingText("");
-          setTranscript((prev) => [
-            ...prev,
-            {
-              id: assistantId,
-              role: "assistant",
-              text: accumText,
-              model,
-              ragSources: lastMetaRef.current?.ragSources ?? null,
-              latencyMs: done.latencyMs,
-              promptTokens: done.promptTokens,
-              completionTokens: done.completionTokens,
-            },
-          ]);
-          lastMetaRef.current = null;
-        },
-        onAbort(partialText, partialMeta) {
-          // Commit whatever streamed so far as a stopped message.
-          setStreamingText("");
-          setTranscript((prev) => [
-            ...prev,
-            {
-              id: assistantId,
-              role: "assistant",
-              text: partialText,
-              model,
-              ragSources: partialMeta?.ragSources ?? lastMetaRef.current?.ragSources ?? null,
-              stopped: true,
-            },
-          ]);
-          lastMetaRef.current = null;
-        },
-        onError(err) {
-          setStreamingText("");
-          const msg = err.message ?? "";
-          const isAwsOffline = err.error === "aws_offline";
-          const isHfUnconfigured = err.error === "hf_not_configured";
-          // HuggingFace is scale-to-zero: a 503 / "service unavailable" / "loading" means the
-          // endpoint is cold-starting, not a real failure. Show that plainly instead of "503".
-          const isWarming =
-            model === "hf" && /\b503\b|service unavailable|loading|warm/i.test(msg);
-          const errorText = isAwsOffline
-            ? "MedGemma box is offline — start it to use AWS."
-            : isHfUnconfigured
-              ? "HuggingFace endpoint is not configured."
-              : isWarming
-                ? "HuggingFace model is warming up (scale-to-zero cold start, ~1–2 min). Hit Retry in a moment."
-                : err.message;
-
-          setTranscript((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              role: "assistant",
-              text: errorText,
-              model,
-              error: err.error,
-            },
-          ]);
-          if (isHfUnconfigured) {
-            toast.error("HuggingFace not configured — switch to AWS MedGemma.");
-          } else if (isWarming) {
-            toast.info("HuggingFace model is warming up — Retry in a moment.");
-          } else if (!isAwsOffline) {
-            toast.error(err.message);
-          }
-          lastMetaRef.current = null;
-        },
-      },
-    );
+    // Append the user entry first so it's included in the messages array.
+    const nextTranscript = [...transcript, userEntry];
+    setTranscript(nextTranscript);
+    sendWithTranscript(nextTranscript, model);
   };
 
-  // Regenerate: re-send the last user prompt with current settings.
+  /**
+   * Regenerate: drop the trailing assistant entry being regenerated, then
+   * rebuild messages ending at the last user turn and re-send.
+   * Works for both normal answers and stopped partials.
+   */
   const handleRegenerate = () => {
-    if (!lastPromptRef.current || streaming) return;
-    handleSend(lastPromptRef.current);
+    if (streaming) return;
+    // Find the last assistant entry (non-error) to drop.
+    let dropIdx = -1;
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i].role === "assistant" && !transcript[i].error) {
+        dropIdx = i;
+        break;
+      }
+    }
+    if (dropIdx === -1) return; // nothing to regenerate
+    const trimmed = transcript.slice(0, dropIdx);
+    setTranscript(trimmed);
+    sendWithTranscript(trimmed, model);
+  };
+
+  /**
+   * New chat: clear the transcript and streaming state.
+   * Model, useRag, and systemPrompt settings are preserved.
+   */
+  const handleNewChat = () => {
+    if (streaming) return;
+    setTranscript([]);
+    setStreamingText("");
+    lastMetaRef.current = null;
   };
 
   // ── Start box shortcut from ChatPanel ─────────────────────────────────────
@@ -289,7 +352,7 @@ export default function PlaygroundPage() {
 
         {/* Info note */}
         <p className="text-sm text-muted-foreground max-w-2xl">
-          Each message is stateless — conversation history is local display only.
+          Conversation context is kept within this chat — start a New chat to reset.
           {!status?.hf.configured && (
             <span className={cn("ml-2 text-xs", "text-yellow-600")}>
               HuggingFace endpoint not configured.
@@ -313,6 +376,7 @@ export default function PlaygroundPage() {
             onToggleRag={() => setUseRag((v) => !v)}
             onRegenerate={handleRegenerate}
             onSystemPromptChange={setSystemPrompt}
+            onNewChat={handleNewChat}
           />
         </div>
       </div>

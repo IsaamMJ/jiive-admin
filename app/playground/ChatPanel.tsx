@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown, Settings2, X } from "lucide-react";
+import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown, Settings2, X, MessageSquarePlus } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -34,6 +34,7 @@ interface Props {
   onToggleRag: () => void;
   onRegenerate: () => void;
   onSystemPromptChange: (value: string) => void;
+  onNewChat: () => void;
 }
 
 // ── Shared markdown styles ────────────────────────────────────────────────────
@@ -349,6 +350,7 @@ export function ChatPanel({
   onToggleRag,
   onRegenerate,
   onSystemPromptChange,
+  onNewChat,
 }: Props) {
   const [prompt, setPrompt] = useState("");
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
@@ -447,7 +449,7 @@ export function ChatPanel({
       >
         {transcript.length === 0 && !streaming && (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground py-16 text-center">
-            <span>Ask a medical question — each message is independent (stateless).</span>
+            <span>Ask a medical question — follow-ups keep context in this chat.</span>
           </div>
         )}
         {transcript.map((entry, idx) => (
@@ -498,7 +500,7 @@ export function ChatPanel({
 
       {/* Composer */}
       <div className="border-t border-border p-3 flex flex-col gap-2">
-        {/* RAG toggle + system prompt disclosure + model note */}
+        {/* RAG toggle + system prompt disclosure + new chat + model note */}
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -514,6 +516,18 @@ export function ChatPanel({
             )}
           >
             RAG {useRag ? "on" : "off"}
+          </button>
+
+          {/* New chat — clears the transcript; disabled mid-stream */}
+          <button
+            type="button"
+            aria-label="New chat"
+            disabled={streaming}
+            onClick={onNewChat}
+            className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <MessageSquarePlus size={11} />
+            New chat
           </button>
 
           {/* System prompt disclosure */}
