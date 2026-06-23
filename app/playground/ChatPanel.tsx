@@ -142,11 +142,12 @@ function RagSourcesBlock({ sources }: { sources: NonNullable<TranscriptEntry["ra
 interface BubbleProps {
   entry: TranscriptEntry;
   isLast: boolean;
+  isLastEntry: boolean;
   streaming: boolean;
   onRegenerate: () => void;
 }
 
-function Bubble({ entry, isLast, streaming, onRegenerate }: BubbleProps) {
+function Bubble({ entry, isLast, isLastEntry, streaming, onRegenerate }: BubbleProps) {
   const isUser = entry.role === "user";
   const isError = !!entry.error;
   const isStopped = !!entry.stopped;
@@ -231,6 +232,22 @@ function Bubble({ entry, isLast, streaming, onRegenerate }: BubbleProps) {
               Regenerate
             </button>
           )}
+        </div>
+      )}
+
+      {/* Retry on the most recent error (e.g. HF cold-start 503) — re-sends the last prompt. */}
+      {!isUser && isError && isLastEntry && (
+        <div className="flex items-center gap-1 px-1">
+          <button
+            type="button"
+            aria-label="Retry"
+            disabled={streaming}
+            onClick={onRegenerate}
+            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <RotateCcw size={11} />
+            Retry
+          </button>
         </div>
       )}
 
@@ -421,6 +438,7 @@ export function ChatPanel({
             key={entry.id}
             entry={entry}
             isLast={idx === lastAssistantIdx && entry.role === "assistant"}
+            isLastEntry={idx === transcript.length - 1}
             streaming={streaming}
             onRegenerate={onRegenerate}
           />

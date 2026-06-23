@@ -185,13 +185,20 @@ export default function PlaygroundPage() {
         },
         onError(err) {
           setStreamingText("");
+          const msg = err.message ?? "";
           const isAwsOffline = err.error === "aws_offline";
           const isHfUnconfigured = err.error === "hf_not_configured";
+          // HuggingFace is scale-to-zero: a 503 / "service unavailable" / "loading" means the
+          // endpoint is cold-starting, not a real failure. Show that plainly instead of "503".
+          const isWarming =
+            model === "hf" && /\b503\b|service unavailable|loading|warm/i.test(msg);
           const errorText = isAwsOffline
             ? "MedGemma box is offline — start it to use AWS."
             : isHfUnconfigured
               ? "HuggingFace endpoint is not configured."
-              : err.message;
+              : isWarming
+                ? "HuggingFace model is warming up (scale-to-zero cold start, ~1–2 min). Hit Retry in a moment."
+                : err.message;
 
           setTranscript((prev) => [
             ...prev,
@@ -205,6 +212,8 @@ export default function PlaygroundPage() {
           ]);
           if (isHfUnconfigured) {
             toast.error("HuggingFace not configured — switch to AWS MedGemma.");
+          } else if (isWarming) {
+            toast.info("HuggingFace model is warming up — Retry in a moment.");
           } else if (!isAwsOffline) {
             toast.error(err.message);
           }
