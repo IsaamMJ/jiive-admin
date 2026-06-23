@@ -83,6 +83,8 @@ export function useChatStream(): UseChatStreamReturn {
         const decoder = new TextDecoder();
         let buffer = "";
 
+        let receivedTerminalEvent = false;
+
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -121,15 +123,27 @@ export function useChatStream(): UseChatStreamReturn {
                 break;
               }
               case "done":
+                receivedTerminalEvent = true;
                 callbacks.onDone(payload as SseDonePayload);
                 break;
               case "error":
+                receivedTerminalEvent = true;
                 // Keep partial text: surface it via onError after partial text was already
                 // streamed via onToken; the page handles rendering the partial bubble.
                 callbacks.onError(payload as SseErrorPayload);
                 break;
             }
           }
+        }
+
+        // If the stream closed without a terminal event (e.g. AWS box stopped mid-stream),
+        // surface an error so the user sees feedback instead of a silent blank.
+        if (!receivedTerminalEvent) {
+          callbacks.onError(
+            req.model === "aws"
+              ? { error: "aws_offline", message: "MedGemma box is offline — start it to use AWS." }
+              : { error: "provider_error", message: "Connection closed unexpectedly." },
+          );
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {

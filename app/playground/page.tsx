@@ -275,13 +275,18 @@ export default function PlaygroundPage() {
           onError(err) {
             setStreamingText("");
             const msg = err.message ?? "";
-            const isAwsOffline = err.error === "aws_offline";
+            const isAwsOffline =
+              err.error === "aws_offline" ||
+              (currentModel === "aws" && /request timed out|timed out/i.test(msg));
             const isHfUnconfigured = err.error === "hf_not_configured";
             const isPatientNotFound = err.error === "patient_not_found";
+            const isUnexpectedClose =
+              err.error === "provider_error" && msg === "Connection closed unexpectedly.";
             // HuggingFace is scale-to-zero: a 503 / "service unavailable" / "loading" means the
             // endpoint is cold-starting, not a real failure. Show that plainly instead of "503".
             const isWarming =
               currentModel === "hf" && /\b503\b|service unavailable|loading|warm/i.test(msg);
+            const isBackend500 = /internal server error|HTTP 5\d\d/i.test(msg);
             const errorText = isAwsOffline
               ? "MedGemma box is offline — start it to use AWS."
               : isHfUnconfigured
@@ -290,7 +295,11 @@ export default function PlaygroundPage() {
                   ? "That patient could not be found — pick another."
                   : isWarming
                     ? "HuggingFace model is warming up (scale-to-zero cold start, ~1–2 min). Hit Retry in a moment."
-                    : err.message;
+                    : isUnexpectedClose
+                      ? "Connection closed unexpectedly — please retry."
+                      : isBackend500
+                        ? "Something went wrong on the server — please retry in a moment."
+                        : err.message;
 
             // Auto-clear a bad patient selection so the operator isn't stuck.
             if (isPatientNotFound) {
@@ -313,7 +322,9 @@ export default function PlaygroundPage() {
               toast.error("Patient not found — selection cleared, pick another.");
             } else if (isWarming) {
               toast.info("HuggingFace model is warming up — Retry in a moment.");
-            } else if (!isAwsOffline) {
+            } else if (isBackend500) {
+              toast.error("Server error — please retry.");
+            } else if (!isAwsOffline && !isUnexpectedClose) {
               toast.error(err.message);
             }
             lastMetaRef.current = null;
