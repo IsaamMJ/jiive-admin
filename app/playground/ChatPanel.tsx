@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { TranscriptEntry, LlmModel, AwsState } from "./types";
 import { InfoTip } from "./InfoTip";
+import { PatientPicker } from "./PatientPicker";
 
 // Maximum prompt length accepted by the backend contract.
 const MAX_PROMPT_CHARS = 8000;
@@ -30,12 +31,16 @@ interface Props {
   awsState: AwsState;
   systemPrompt: string;
   defaultSystemPrompt: string; // from backend status; shown read-only when override is empty
+  /** Currently selected de-identified patient id, or null. */
+  patientId: string | null;
   onSend: (prompt: string) => void;
   onStop: () => void;
   onStartBox: () => void; // called when user hits "Start box" inside an aws_offline error
   onToggleRag: () => void;
   onRegenerate: () => void;
   onSystemPromptChange: (value: string) => void;
+  /** Called when the patient selection changes (null = cleared). */
+  onPatientChange: (id: string | null) => void;
 }
 
 // ── Shared markdown styles ────────────────────────────────────────────────────
@@ -350,12 +355,14 @@ export function ChatPanel({
   awsState,
   systemPrompt,
   defaultSystemPrompt,
+  patientId,
   onSend,
   onStop,
   onStartBox,
   onToggleRag,
   onRegenerate,
   onSystemPromptChange,
+  onPatientChange,
 }: Props) {
   const [prompt, setPrompt] = useState("");
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
@@ -535,6 +542,13 @@ export function ChatPanel({
           <InfoTip
             label="Retrieval-Augmented Generation — pulls relevant facts from our own medical knowledge base (documents we've added) and gives them to the AI for this answer, instead of it relying only on what it learned in training. This is separate from chat history. It searches using your most recent message."
             side="top"
+          />
+
+          {/* Patient picker */}
+          <PatientPicker
+            patientId={patientId}
+            disabled={streaming}
+            onChange={onPatientChange}
           />
 
           {/* System prompt disclosure */}

@@ -16,6 +16,54 @@ export interface ChatRequest {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
+  /** De-identified patient id. Backend injects context server-side; frontend never sends PII. */
+  patientId?: string;
+}
+
+// GET /llm-playground/patients ────────────────────────────────────────────────
+
+/** Summary entry returned by GET /llm-playground/patients — no PII. */
+export interface PatientSummary {
+  id: string;
+  label: string;   // e.g. "male · 30–39 · bio-age 39.0"
+  summary: string; // one-line plain description
+}
+
+/** One biomarker reading — no PII. */
+export interface PatientBiomarker {
+  name: string;
+  value: number | string;
+  unit?: string;
+  referenceRange?: string;
+}
+
+/** One result within a booking — no PII. */
+export interface PatientResult {
+  calculatedAge: number;
+  chronologicalAgeBand: string;
+  ageDelta: number;
+  elevatedFlag: boolean;
+  biomarkers: PatientBiomarker[];
+}
+
+/** One booking — no PII. */
+export interface PatientBooking {
+  testType: string;
+  skuId: string;
+  status: string;
+  results: PatientResult[];
+}
+
+/** De-identified patient detail returned by GET /llm-playground/patients/:id — no PII. */
+export interface PatientDetail {
+  id: string;
+  label: string;
+  deidentified: {
+    sex: string;
+    ageBand: string;
+    latestBioAge: number | null;
+    bookings: PatientBooking[];
+  };
 }
 
 // SSE event payloads (in arrival order: meta → token* → done | error) ─────────

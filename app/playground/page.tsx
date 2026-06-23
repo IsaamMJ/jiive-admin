@@ -62,6 +62,8 @@ export default function PlaygroundPage() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [streamingText, setStreamingText] = useState("");
+  /** De-identified patient id attached to the current chat. Never PII — only the uuid. */
+  const [activePatientId, setActivePatientId] = useState<string | null>(null);
 
   // lastMeta is tracked on the streaming assistant entry (used by onDone/onAbort).
   // Stored in a ref so it doesn't cause re-renders on every token.
@@ -221,6 +223,8 @@ export default function PlaygroundPage() {
           model: currentModel,
           useRag,
           systemPrompt: systemPrompt.trim() || undefined,
+          // Only ever send the id — backend injects de-identified context server-side.
+          patientId: activePatientId ?? undefined,
         },
         {
           onMeta(meta) {
@@ -273,6 +277,7 @@ export default function PlaygroundPage() {
             const msg = err.message ?? "";
             const isAwsOffline = err.error === "aws_offline";
             const isHfUnconfigured = err.error === "hf_not_configured";
+            const isPatientNotFound = err.error === "patient_not_found";
             // HuggingFace is scale-to-zero: a 503 / "service unavailable" / "loading" means the
             // endpoint is cold-starting, not a real failure. Show that plainly instead of "503".
             const isWarming =
@@ -281,9 +286,16 @@ export default function PlaygroundPage() {
               ? "MedGemma box is offline — start it to use AWS."
               : isHfUnconfigured
                 ? "HuggingFace endpoint is not configured."
-                : isWarming
-                  ? "HuggingFace model is warming up (scale-to-zero cold start, ~1–2 min). Hit Retry in a moment."
-                  : err.message;
+                : isPatientNotFound
+                  ? "That patient could not be found — pick another."
+                  : isWarming
+                    ? "HuggingFace model is warming up (scale-to-zero cold start, ~1–2 min). Hit Retry in a moment."
+                    : err.message;
+
+            // Auto-clear a bad patient selection so the operator isn't stuck.
+            if (isPatientNotFound) {
+              setActivePatientId(null);
+            }
 
             setTranscript((prev) => [
               ...prev,
@@ -297,6 +309,8 @@ export default function PlaygroundPage() {
             ]);
             if (isHfUnconfigured) {
               toast.error("HuggingFace not configured — switch to AWS MedGemma.");
+            } else if (isPatientNotFound) {
+              toast.error("Patient not found — selection cleared, pick another.");
             } else if (isWarming) {
               toast.info("HuggingFace model is warming up — Retry in a moment.");
             } else if (!isAwsOffline) {
@@ -307,7 +321,7 @@ export default function PlaygroundPage() {
         },
       );
     },
-    [send, useRag, systemPrompt, upsertConversation],
+    [send, useRag, systemPrompt, upsertConversation, activePatientId],
   );
 
   const handleSend = (prompt: string) => {
@@ -344,6 +358,7 @@ export default function PlaygroundPage() {
   /**
    * New chat: clear the transcript and streaming state.
    * Model, useRag, and systemPrompt settings are preserved.
+   * Active patient is also cleared — it is not persisted in conversation history.
    */
   const handleNewChat = useCallback(() => {
     if (streaming) return;
@@ -352,11 +367,13 @@ export default function PlaygroundPage() {
     lastMetaRef.current = null;
     conversationIdRef.current = null;
     setActiveConvId(null);
+    setActivePatientId(null);
     convCreateInFlightRef.current = false;
   }, [streaming]);
 
   /**
    * Open a conversation from history.
+   * Active patient is cleared — conversations do not persist patient selection.
    */
   const handleOpenConversation = useCallback((id: string) => {
     if (streaming) return;
@@ -374,6 +391,7 @@ export default function PlaygroundPage() {
         lastMetaRef.current = null;
         conversationIdRef.current = r.data.id;
         setActiveConvId(r.data.id);
+        setActivePatientId(null);
       })
       .catch(() => { toast.error("Failed to load conversation"); });
   }, [streaming]);
@@ -487,12 +505,14 @@ export default function PlaygroundPage() {
               awsState={status?.aws.state ?? "unconfigured"}
               systemPrompt={systemPrompt}
               defaultSystemPrompt={status?.defaultSystemPrompt ?? ""}
+              patientId={activePatientId}
               onSend={handleSend}
               onStop={stop}
               onStartBox={handleStartBox}
               onToggleRag={() => setUseRag((v) => !v)}
               onRegenerate={handleRegenerate}
               onSystemPromptChange={setSystemPrompt}
+              onPatientChange={setActivePatientId}
             />
           </div>
         </div>
