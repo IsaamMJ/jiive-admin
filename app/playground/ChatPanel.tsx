@@ -533,7 +533,7 @@ export function ChatPanel({
             RAG {useRag ? "on" : "off"}
           </button>
           <InfoTip
-            label="Retrieval-Augmented Generation — grounds answers in our own medical knowledge base instead of only the AI's memory. It searches using your most recent message."
+            label="Retrieval-Augmented Generation — pulls relevant facts from our own medical knowledge base (documents we've added) and gives them to the AI for this answer, instead of it relying only on what it learned in training. This is separate from chat history. It searches using your most recent message."
             side="top"
           />
 
