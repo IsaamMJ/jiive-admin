@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback } from "react";
-import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown } from "lucide-react";
+import { Send, Square, ChevronDown, ChevronUp, Copy, RotateCcw, ArrowDown, Settings2, X } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -13,6 +13,10 @@ import type { TranscriptEntry, LlmModel, AwsState } from "./types";
 const MAX_PROMPT_CHARS = 8000;
 // Show the char counter within this many chars of the limit.
 const COUNTER_WARN_THRESHOLD = 500;
+// Maximum system prompt length accepted by the backend contract.
+const MAX_SYSTEM_PROMPT_CHARS = 2000;
+// Show the system prompt char counter within this many chars of the limit.
+const SYSTEM_PROMPT_COUNTER_WARN_THRESHOLD = 200;
 // Auto-scroll threshold — if the user is within this many px of the bottom, keep following.
 const SCROLL_BOTTOM_THRESHOLD = 80;
 
@@ -23,11 +27,13 @@ interface Props {
   model: LlmModel;
   useRag: boolean;
   awsState: AwsState;
+  systemPrompt: string;
   onSend: (prompt: string) => void;
   onStop: () => void;
   onStartBox: () => void; // called when user hits "Start box" inside an aws_offline error
   onToggleRag: () => void;
   onRegenerate: () => void;
+  onSystemPromptChange: (value: string) => void;
 }
 
 // ── Shared markdown styles ────────────────────────────────────────────────────
@@ -336,13 +342,16 @@ export function ChatPanel({
   model,
   useRag,
   awsState,
+  systemPrompt,
   onSend,
   onStop,
   onStartBox,
   onToggleRag,
   onRegenerate,
+  onSystemPromptChange,
 }: Props) {
   const [prompt, setPrompt] = useState("");
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -381,6 +390,7 @@ export function ChatPanel({
   const handleSend = () => {
     const trimmed = prompt.trim();
     if (!trimmed || streaming || trimmed.length > MAX_PROMPT_CHARS) return;
+    if (systemPromptOverLimit) return;
     onSend(trimmed);
     setPrompt("");
     // Reset textarea height back to single row and refocus.
@@ -411,6 +421,13 @@ export function ChatPanel({
   const charCount = prompt.length;
   const overLimit = charCount > MAX_PROMPT_CHARS;
   const showCounter = charCount >= MAX_PROMPT_CHARS - COUNTER_WARN_THRESHOLD;
+
+  const systemPromptCharCount = systemPrompt.length;
+  const systemPromptOverLimit = systemPromptCharCount > MAX_SYSTEM_PROMPT_CHARS;
+  const showSystemPromptCounter =
+    systemPromptCharCount >= MAX_SYSTEM_PROMPT_CHARS - SYSTEM_PROMPT_COUNTER_WARN_THRESHOLD;
+  // A prompt is "custom" if it has non-whitespace content.
+  const hasCustomSystemPrompt = systemPrompt.trim().length > 0;
 
   // Find the last assistant entry (non-error) to attach Regenerate.
   const lastAssistantIdx = (() => {
@@ -481,7 +498,7 @@ export function ChatPanel({
 
       {/* Composer */}
       <div className="border-t border-border p-3 flex flex-col gap-2">
-        {/* RAG toggle + model note */}
+        {/* RAG toggle + system prompt disclosure + model note */}
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -498,6 +515,32 @@ export function ChatPanel({
           >
             RAG {useRag ? "on" : "off"}
           </button>
+
+          {/* System prompt disclosure */}
+          <button
+            type="button"
+            aria-expanded={systemPromptOpen}
+            aria-label="Toggle system prompt"
+            onClick={() => setSystemPromptOpen((v) => !v)}
+            className={cn(
+              "flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              systemPromptOpen
+                ? "border-primary bg-primary/10 text-primary"
+                : hasCustomSystemPrompt
+                  ? "border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-600"
+                  : "border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            )}
+          >
+            <Settings2 size={11} />
+            System prompt
+            {hasCustomSystemPrompt && !systemPromptOpen && (
+              <span className="ml-0.5 rounded-full bg-amber-400/30 px-1 py-0 text-[10px] font-medium">
+                custom
+              </span>
+            )}
+            {systemPromptOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          </button>
+
           <span className="text-xs text-muted-foreground">Shift+Enter for newline</span>
           {/* Character counter — only shown near or over the limit */}
           {showCounter && (
@@ -511,6 +554,65 @@ export function ChatPanel({
             </span>
           )}
         </div>
+
+        {/* System prompt editor — collapsible */}
+        {systemPromptOpen && (
+          <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">
+                System prompt override
+              </span>
+              <div className="flex items-center gap-2">
+                {showSystemPromptCounter && (
+                  <span
+                    className={cn(
+                      "text-xs tabular-nums",
+                      systemPromptOverLimit
+                        ? "text-destructive font-medium"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {systemPromptCharCount}/{MAX_SYSTEM_PROMPT_CHARS}
+                  </span>
+                )}
+                {hasCustomSystemPrompt && (
+                  <button
+                    type="button"
+                    aria-label="Reset system prompt to default"
+                    onClick={() => onSystemPromptChange("")}
+                    className="flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+                  >
+                    <X size={11} />
+                    Reset
+                  </button>
+                )}
+              </div>
+            </div>
+            <textarea
+              value={systemPrompt}
+              onChange={(e) => {
+                // Block input past the 2000-char contract limit.
+                if (e.target.value.length <= MAX_SYSTEM_PROMPT_CHARS) {
+                  onSystemPromptChange(e.target.value);
+                }
+              }}
+              disabled={streaming}
+              placeholder="e.g. You are a clinical assistant for doctors; provide reference ranges with sources."
+              rows={3}
+              aria-label="System prompt override"
+              className={cn(
+                "w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm",
+                "placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring",
+                "disabled:opacity-50 disabled:cursor-not-allowed",
+                systemPromptOverLimit && "border-destructive focus:ring-destructive",
+              )}
+              style={{ minHeight: "72px", maxHeight: "160px" }}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Empty means use the backend default. Applies to both models and to Regenerate.
+            </p>
+          </div>
+        )}
 
         <div className="flex items-end gap-2">
           <textarea
@@ -545,10 +647,16 @@ export function ChatPanel({
             <Button
               size="sm"
               onClick={handleSend}
-              disabled={!prompt.trim() || overLimit}
-              title={overLimit ? `Prompt exceeds ${MAX_PROMPT_CHARS} character limit` : undefined}
+              disabled={!prompt.trim() || overLimit || systemPromptOverLimit}
+              title={
+                overLimit
+                  ? `Prompt exceeds ${MAX_PROMPT_CHARS} character limit`
+                  : systemPromptOverLimit
+                    ? `System prompt exceeds ${MAX_SYSTEM_PROMPT_CHARS} character limit`
+                    : undefined
+              }
               aria-label="Send message"
-              aria-disabled={!prompt.trim() || overLimit}
+              aria-disabled={!prompt.trim() || overLimit || systemPromptOverLimit}
               className="shrink-0"
             >
               <Send size={13} />

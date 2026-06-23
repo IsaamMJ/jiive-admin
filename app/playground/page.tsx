@@ -34,6 +34,7 @@ const nextId = () => String(++entryCounter);
 export default function PlaygroundPage() {
   const [model, setModel] = useState<LlmModel>("hf");
   const [useRag, setUseRag] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [streamingText, setStreamingText] = useState("");
 
@@ -139,7 +140,7 @@ export default function PlaygroundPage() {
     lastMetaRef.current = null;
 
     send(
-      { prompt, model, useRag },
+      { prompt, model, useRag, systemPrompt: systemPrompt.trim() || undefined },
       {
         onMeta(meta) {
           lastMetaRef.current = { ragSources: meta.ragSources };
@@ -305,11 +306,13 @@ export default function PlaygroundPage() {
             model={model}
             useRag={useRag}
             awsState={status?.aws.state ?? "unconfigured"}
+            systemPrompt={systemPrompt}
             onSend={handleSend}
             onStop={stop}
             onStartBox={handleStartBox}
             onToggleRag={() => setUseRag((v) => !v)}
             onRegenerate={handleRegenerate}
+            onSystemPromptChange={setSystemPrompt}
           />
         </div>
       </div>
