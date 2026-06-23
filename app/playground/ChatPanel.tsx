@@ -431,13 +431,7 @@ export function ChatPanel({
   // A prompt is "custom" if it has non-whitespace content.
   const hasCustomSystemPrompt = systemPrompt.trim().length > 0;
 
-  // Find the last assistant entry (non-error) to attach Regenerate.
-  const lastAssistantIdx = (() => {
-    for (let i = transcript.length - 1; i >= 0; i--) {
-      if (transcript[i].role === "assistant" && !transcript[i].error) return i;
-    }
-    return -1;
-  })();
+  const lastIdx = transcript.length - 1;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 rounded-lg border border-border bg-card">
@@ -456,8 +450,8 @@ export function ChatPanel({
           <Bubble
             key={entry.id}
             entry={entry}
-            isLast={idx === lastAssistantIdx && entry.role === "assistant"}
-            isLastEntry={idx === transcript.length - 1}
+            isLast={idx === lastIdx && entry.role === "assistant" && !entry.error}
+            isLastEntry={idx === lastIdx}
             streaming={streaming}
             onRegenerate={onRegenerate}
           />

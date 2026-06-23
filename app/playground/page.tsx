@@ -268,10 +268,12 @@ export default function PlaygroundPage() {
    */
   const handleRegenerate = () => {
     if (streaming) return;
-    // Find the last assistant entry (non-error) to drop.
+    // Drop the LAST assistant entry — whether it's a real answer (Regenerate),
+    // a stopped partial, or an error bubble (Retry). In every case the remaining
+    // transcript ends at the user turn we want to re-answer.
     let dropIdx = -1;
     for (let i = transcript.length - 1; i >= 0; i--) {
-      if (transcript[i].role === "assistant" && !transcript[i].error) {
+      if (transcript[i].role === "assistant") {
         dropIdx = i;
         break;
       }
