@@ -30,7 +30,9 @@ export function AwsBoxControl({ aws, onActionDone }: Props) {
       const resp = (err as { response?: { data?: { error?: string; message?: string } } })
         ?.response?.data;
       const errorCode = resp?.error;
-      if (errorCode === "iam_permission_missing") {
+      if (errorCode === "insufficient_capacity") {
+        toast.error("GPU unavailable — AWS has no capacity right now. Try again shortly, or use HuggingFace instead.");
+      } else if (errorCode === "iam_permission_missing") {
         toast.error("IAM policy not configured. Contact ops.");
       } else if (errorCode === "aws_not_configured") {
         toast.error("AWS instance not configured. Contact ops.");
@@ -39,7 +41,7 @@ export function AwsBoxControl({ aws, onActionDone }: Props) {
         const isServerError = !msg || /internal server error/i.test(msg);
         toast.error(
           isServerError
-            ? `Box ${action} failed — backend error. Check with ops (AWS credentials / instance config).`
+            ? `Box ${action} failed — backend error. Contact ops.`
             : msg,
         );
       }
