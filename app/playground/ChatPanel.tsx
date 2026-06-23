@@ -266,6 +266,50 @@ function StreamingBubble({ text, model }: { text: string; model: LlmModel }) {
   );
 }
 
+// Contextual banner shown when AWS is selected but the box isn't ready to serve.
+function BoxBanner({
+  awsState, streaming, onStartBox,
+}: { awsState: AwsState; streaming: boolean; onStartBox: () => void }) {
+  let text: string;
+  let dot = "bg-yellow-500";
+  let action: React.ReactNode = null;
+
+  switch (awsState) {
+    case "stopped":
+      text = "MedGemma box is offline — start it to use AWS MedGemma (~2-3 min).";
+      dot = "bg-red-500";
+      action = (
+        <Button size="sm" variant="outline" disabled={streaming} onClick={onStartBox}>
+          Start box
+        </Button>
+      );
+      break;
+    case "pending":
+      text = "MedGemma box is starting… this takes ~2-3 min.";
+      break;
+    case "stopping":
+      text = "MedGemma box is stopping…";
+      break;
+    case "permission_denied":
+      text = "MedGemma box control needs IAM access — contact ops.";
+      dot = "bg-muted-foreground";
+      break;
+    case "error":
+    default:
+      text = "MedGemma box status is unavailable — you can still try sending; it may still respond.";
+      dot = "bg-muted-foreground";
+      break;
+  }
+
+  return (
+    <div className="mx-4 mb-2 flex items-center gap-3 rounded-lg border border-border bg-muted/50 px-4 py-2.5">
+      <span className={cn("inline-block h-2 w-2 shrink-0 rounded-full", dot)} />
+      <p className="flex-1 text-sm text-muted-foreground">{text}</p>
+      {action}
+    </div>
+  );
+}
+
 // ── Main ChatPanel ────────────────────────────────────────────────────────────
 
 export function ChatPanel({
@@ -411,21 +455,10 @@ export function ChatPanel({
         )}
       </div>
 
-      {/* aws_offline inline prompt */}
-      {!streaming && model === "aws" && awsState === "stopped" && transcript.length > 0 && (
-        (() => {
-          const last = transcript[transcript.length - 1];
-          return last?.error === "aws_offline" ? (
-            <div className="mx-4 mb-2 flex items-center gap-3 rounded-lg border border-border bg-muted/50 px-4 py-2.5">
-              <p className="flex-1 text-sm text-muted-foreground">
-                MedGemma box is offline. Start it to continue.
-              </p>
-              <Button size="sm" variant="outline" onClick={onStartBox}>
-                Start box
-              </Button>
-            </div>
-          ) : null;
-        })()
+      {/* Proactive MedGemma box guidance — shown whenever AWS is selected but the box isn't ready,
+          so the operator knows the state before sending instead of after a failed request. */}
+      {model === "aws" && awsState !== "running" && awsState !== "unconfigured" && (
+        <BoxBanner awsState={awsState} streaming={streaming} onStartBox={onStartBox} />
       )}
 
       {/* Composer */}

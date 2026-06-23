@@ -21,8 +21,10 @@ import type {
 } from "./types";
 import { isTransitioning } from "./types";
 
-// Poll every 10s during transitions; stop when settled.
+// Poll every 10s during transitions / after a box action.
 const POLL_MS = 10_000;
+// Steady-state refresh so the status pill never goes stale (box may be started/stopped elsewhere).
+const IDLE_POLL_MS = 30_000;
 // Max polls after a box action (~3 min / 10s = 18).
 const MAX_POST_ACTION_POLLS = 18;
 
@@ -79,20 +81,20 @@ export default function PlaygroundPage() {
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
 
       const state = latestStateRef.current;
-      const budgetLeft = postActionPollsRef.current > 0;
-      const needsPoll = isTransitioning(state ?? "stopped") || budgetLeft;
-
-      if (!needsPoll) return;
+      const active = isTransitioning(state ?? "stopped") || postActionPollsRef.current > 0;
+      // Fast cadence while transitioning / just after an action; slow idle refresh otherwise.
+      // Always reschedule so the pill stays live (the box can be started/stopped elsewhere).
+      const delay = active ? POLL_MS : IDLE_POLL_MS;
 
       pollTimerRef.current = setTimeout(() => {
         if (document.hidden) {
-          // Page hidden — re-arm without burning the poll budget.
+          // Page hidden — re-arm without burning the poll budget or hitting the API.
           schedulePollRef.current();
           return;
         }
         if (postActionPollsRef.current > 0) postActionPollsRef.current--;
         fetchStatusRef.current().then(() => { schedulePollRef.current(); });
-      }, POLL_MS);
+      }, delay);
     };
   }, []);
 
@@ -251,8 +253,13 @@ export default function PlaygroundPage() {
               disabled={streaming}
               onChange={(m) => {
                 setModel(m);
-                if (m === "aws" && status?.aws.state === "unconfigured") {
-                  toast.info("AWS MedGemma is not configured.");
+                // Switching to AWS: refresh box status right away so the pill reflects reality.
+                if (m === "aws") {
+                  if (status?.aws.state === "unconfigured") {
+                    toast.info("AWS MedGemma is not configured.");
+                  } else {
+                    fetchStatus().then(() => schedulePoll());
+                  }
                 }
               }}
             />
