@@ -13,10 +13,10 @@ import type { TranscriptEntry, LlmModel, AwsState } from "./types";
 const MAX_PROMPT_CHARS = 8000;
 // Show the char counter within this many chars of the limit.
 const COUNTER_WARN_THRESHOLD = 500;
-// Maximum system prompt length accepted by the backend contract.
-const MAX_SYSTEM_PROMPT_CHARS = 2000;
+// Maximum system prompt length accepted by the backend contract (8000 per backend, 2026-06-23).
+const MAX_SYSTEM_PROMPT_CHARS = 8000;
 // Show the system prompt char counter within this many chars of the limit.
-const SYSTEM_PROMPT_COUNTER_WARN_THRESHOLD = 200;
+const SYSTEM_PROMPT_COUNTER_WARN_THRESHOLD = 500;
 // Auto-scroll threshold — if the user is within this many px of the bottom, keep following.
 const SCROLL_BOTTOM_THRESHOLD = 80;
 
