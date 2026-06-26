@@ -5,8 +5,10 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { Sparkles } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
@@ -72,8 +74,14 @@ export default function ResultDetailPage() {
     <AdminLayout title="Result Detail">
       <div className="flex flex-col gap-6">
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle className="capitalize">{result.testType.replace(/_/g, " ")} — {result.user.name ?? result.user.whatsappPhone}</CardTitle>
+            <Link href={`/playground?userId=${result.user.id}`}>
+              <Button size="sm" variant="outline" className="gap-1.5 shrink-0">
+                <Sparkles size={14} />
+                Ask AI about this patient
+              </Button>
+            </Link>
           </CardHeader>
           <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div><p className="text-muted-foreground">Bio Age</p><p className="text-xl font-bold">{result.calculatedAge}</p></div>

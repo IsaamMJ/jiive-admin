@@ -3,6 +3,7 @@
 export const dynamic = "force-dynamic";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -75,6 +76,10 @@ function buildMessages(entries: TranscriptEntry[]): ChatMessage[] {
 }
 
 export default function PlaygroundPage() {
+  const router = useRouter();
+  // Guard: consume ?userId= deep-link exactly once on mount.
+  const deepLinkConsumedRef = useRef(false);
+
   const [model, setModel] = useState<LlmModel>("hf");
   const [useRag, setUseRag] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -179,6 +184,31 @@ export default function PlaygroundPage() {
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Deep-link: ?userId= → pre-load patient ───────────────────────────────
+  // Runs once on mount. Does not interfere with handleNewChat / handleOpenConversation
+  // because it fires before any conversation is created (transcript is empty on mount).
+
+  useEffect(() => {
+    if (deepLinkConsumedRef.current) return;
+    // Read directly from window.location — avoids useSearchParams Suspense requirement
+    // while still running only client-side (this is a "use client" component).
+    const userId = new URLSearchParams(window.location.search).get("userId");
+    if (!userId) return;
+    deepLinkConsumedRef.current = true;
+    // Strip param immediately so a refresh or sidebar open doesn't re-trigger.
+    router.replace("/playground");
+    api
+      .get<{ id: string; label: string; deidentified: object }>(`/llm-playground/patients/by-user/${userId}`)
+      .then((resp) => {
+        setActivePatientId(resp.data.id);
+        activePatientIdRef.current = resp.data.id;
+      })
+      .catch(() => {
+        toast.info("No patient record available for this user in the playground.");
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Called by AwsBoxControl after a successful box action.

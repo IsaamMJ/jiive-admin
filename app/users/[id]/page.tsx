@@ -20,6 +20,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 
@@ -180,7 +181,15 @@ export default function UserDetailPage() {
         {/* Profile */}
         <TabsContent value="profile">
           <Card>
-            <CardHeader><CardTitle className="text-sm font-medium">Profile</CardTitle></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
+              <CardTitle className="text-sm font-medium">Profile</CardTitle>
+              <Link href={`/playground?userId=${id}`}>
+                <Button size="sm" variant="outline" className="gap-1.5">
+                  <Sparkles size={14} />
+                  Ask AI about this patient
+                </Button>
+              </Link>
+            </CardHeader>
             <CardContent className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
               <div><p className="text-muted-foreground">Phone</p><p className="font-mono">{user.whatsappPhone}</p></div>
               <div><p className="text-muted-foreground">Name</p><p>{user.name ?? "—"}</p></div>

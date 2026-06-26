@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { User2, MapPin, Beaker, ExternalLink, RotateCcw, Ban } from "lucide-react";
+import { User2, MapPin, Beaker, ExternalLink, RotateCcw, Ban, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CancellationBadge } from "./CancellationBadge";
 import { CopyableId } from "./CopyableId";
@@ -77,6 +77,13 @@ export function BookingExpandedPanel({ booking }: { booking: Booking }) {
           >
             Open user profile
             <ExternalLink size={11} />
+          </Link>
+          <Link
+            href={`/playground?userId=${booking.user.id}`}
+            className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline w-fit"
+          >
+            <Sparkles size={11} />
+            Ask AI about this patient
           </Link>
         </SectionCard>
 
