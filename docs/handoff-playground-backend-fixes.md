@@ -59,3 +59,33 @@ Found in the de-identified patient data returned by `/llm-playground/patients/:i
 - One patient: `female 20–29, bio-age 12.9` — bio-age of 12.9 years for an adult female looks implausible (likely a data pipeline issue).
 
 The LLM reproduces these values verbatim to clinicians. Worth cleaning before the medical team uses it.
+
+---
+
+## QUESTION 6 — Does the LLM context get exact chronological age, or only the band? (PRIORITY: MEDIUM)
+
+The team noticed the picker shows chronological age as a **band** (`male · 50–59`)
+while bio-age is **exact** (`44.8`). The contract (`/patients/:id`) only ever returns
+banded chronological age (`ageBand`, `chronologicalAgeBand`) — no exact value anywhere.
+
+**Question:** when a patient is injected into the chat context server-side via
+`patientId`, does the model receive the **exact chronological age** or only the band?
+It matters clinically — a 50yo and a 59yo reason very differently, and the model
+can't tell them apart if it only has `50–59`.
+
+**Decision needed:** is it acceptable (privacy-wise) to inject exact chronological
+age into the *server-side* model context (never shown in the frontend UI, which stays
+banded)? If yes, please inject it. If no, confirm the model is reasoning on the band
+so we set expectations with the medical team.
+
+---
+
+## BUG 7 — Picker `summary` field is junk (PRIORITY: MEDIUM)
+
+`GET /llm-playground/patients` returns a `summary` per patient that is currently
+echoing raw field names, e.g. `"bio_age, bio-age 44.8"`. It renders as a useless
+grey line under each entry in the picker and confuses operators.
+
+**Fix:** make `summary` a real one-line human description (e.g. `"T2DM, cardiac risk"`
+/ `"elevated bio-age, 2 bookings"`), or return it empty and we'll drop the line.
+Right now it's noise.
