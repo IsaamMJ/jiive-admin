@@ -2,6 +2,11 @@
 
 Found via stress testing (2026-06-23). Frontend already handles these gracefully, but fixing backend would improve the experience.
 
+> **STATUS (2026-06-27):** BUG1 (useRag default), BUG2 (31s hang), ISSUE3 (KB-grounding leak)
+> reported shipped by backend. **Q6 (exact age in LLM context) ✅ DONE** — model gets exact age,
+> UI shows band. **BUG7 (junk picker `summary`) ✅ DONE** — shipped to prod. Remaining/unconfirmed:
+> NOTE4 (RAG completion cap) and NOTE5 (patient biomarker data-quality, upstream).
+
 ---
 
 ## BUG 1 — `useRag` has no default in the Zod schema (PRIORITY: HIGH)

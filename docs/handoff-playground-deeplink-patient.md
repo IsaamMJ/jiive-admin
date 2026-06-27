@@ -1,5 +1,10 @@
 # Handoff → jiive-backend — Playground: open a real patient from the admin
 
+> **STATUS: ✅ DONE (2026-06-27).** Backend shipped `GET /patients/by-user/:userId` (Option A)
+> to dev + prod; frontend "Ask AI about this patient" buttons (user detail / booking expanded /
+> result detail) are live on prod and verified (by-user route returns 401 unauth → route exists).
+> Kept for reference.
+
 **Date:** 2026-06-25
 **From:** jiive-admin (frontend / head)
 **Env:** dev — `/api/v1/admin/llm-playground`

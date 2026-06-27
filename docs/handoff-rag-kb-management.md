@@ -1,5 +1,9 @@
 # Handoff → jiive-backend — RAG/KB: make it Juveira-owned and self-serve
 
+> **STATUS: 🔶 OPEN / ACTIVE (as of 2026-06-27).** Spec finalized, phasing agreed with backend.
+> Backend to build the management endpoints; frontend management UI (`app/rag/`) starts once
+> endpoint shapes are confirmed. This is the main remaining work item.
+
 **Date:** 2026-06-25
 **From:** jiive-admin (frontend / head)
 **Env:** dev — `/api/v1/admin/rag`
