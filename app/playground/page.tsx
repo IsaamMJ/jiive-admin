@@ -534,6 +534,22 @@ export default function PlaygroundPage() {
       .catch(() => { toast.error("Failed to delete conversation"); });
   }, [handleNewChat]);
 
+  // ── Rename a conversation ─────────────────────────────────────────────────
+
+  const handleRenameConversation = useCallback((id: string, title: string) => {
+    // Optimistic update
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, title } : c)),
+    );
+    api
+      .patch(`/llm-playground/conversations/${id}`, { title })
+      .catch(() => {
+        // Revert: re-fetch the list so the old title is restored
+        fetchConversations();
+        toast.error("Couldn't rename chat");
+      });
+  }, [fetchConversations]);
+
   // ── Start box shortcut from ChatPanel ─────────────────────────────────────
 
   const handleStartBox = () => {
@@ -563,6 +579,7 @@ export default function PlaygroundPage() {
           onNew={handleNewChat}
           onOpen={handleOpenConversation}
           onDelete={handleDeleteConversation}
+          onRename={handleRenameConversation}
         />
 
         {/* Main content */}
