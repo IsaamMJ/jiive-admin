@@ -20,6 +20,7 @@ import {
   ScrollText,
   AlertTriangle,
   Sparkles,
+  BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getToken } from "@/lib/auth";
@@ -45,6 +46,7 @@ const nav = [
   { href: "/debug", label: "Debug", icon: Bug },
   { href: "/thyrocare", label: "Thyrocare", icon: TestTube2 },
   { href: "/playground", label: "LLM Playground", icon: Sparkles },
+  { href: "/rag", label: "Knowledge Base", icon: BookOpen },
 ];
 
 export function Sidebar({ className }: { className?: string }) {
