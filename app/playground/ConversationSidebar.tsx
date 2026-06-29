@@ -43,12 +43,12 @@ export function ConversationSidebar({ conversations, activeId, streaming, onNew,
   }
 
   function commitRename() {
+    if (editingId === null) return; // already committed/cancelled — no double fire
+    const id = editingId;
     const trimmed = editValue.trim().slice(0, MAX_TITLE_LEN);
-    if (trimmed && editingId) {
-      onRename(editingId, trimmed);
-    }
     setEditingId(null);
     setEditValue("");
+    if (trimmed) onRename(id, trimmed);
   }
 
   function cancelRename() {

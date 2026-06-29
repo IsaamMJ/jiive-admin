@@ -93,6 +93,8 @@ export default function PlaygroundPage() {
 
   const [status, setStatus] = useState<PlaygroundStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
+  // True while the deep-link patient fetch is in flight — blocks the composer (Bug F).
+  const [deepLinkPending, setDeepLinkPending] = useState(false);
 
   // Conversation history state
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -199,14 +201,17 @@ export default function PlaygroundPage() {
     deepLinkConsumedRef.current = true;
     // Strip param immediately so a refresh or sidebar open doesn't re-trigger.
     router.replace("/playground");
+    setDeepLinkPending(true);
     api
       .get<{ id: string; label: string; deidentified: object }>(`/llm-playground/patients/by-user/${userId}`)
       .then((resp) => {
         setActivePatientId(resp.data.id);
         activePatientIdRef.current = resp.data.id;
+        setDeepLinkPending(false);
       })
       .catch(() => {
         toast.info("No patient record available for this user in the playground.");
+        setDeepLinkPending(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -663,6 +668,7 @@ export default function PlaygroundPage() {
               patientId={activePatientId}
               patientLocked={patientLocked}
               isOwner={activeConvIsOwner}
+              composerDisabled={deepLinkPending}
               onSend={handleSend}
               onStop={stop}
               onStartBox={handleStartBox}

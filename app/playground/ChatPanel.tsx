@@ -46,6 +46,8 @@ interface Props {
   onEdit: (entryId: string, newText: string) => void;
   /** Whether the current user owns this conversation. Defaults to true. */
   isOwner?: boolean;
+  /** Blocks the composer while a background fetch is pending (e.g. deep-link patient resolve). */
+  composerDisabled?: boolean;
 }
 
 // ── Shared markdown styles ────────────────────────────────────────────────────
@@ -419,6 +421,7 @@ export function ChatPanel({
   patientId,
   patientLocked,
   isOwner = true,
+  composerDisabled = false,
   onSend,
   onStop,
   onStartBox,
@@ -467,7 +470,7 @@ export function ChatPanel({
 
   const handleSend = () => {
     const trimmed = prompt.trim();
-    if (!trimmed || streaming || trimmed.length > MAX_PROMPT_CHARS) return;
+    if (!trimmed || streaming || composerDisabled || trimmed.length > MAX_PROMPT_CHARS) return;
     if (systemPromptOverLimit) return;
     onSend(trimmed);
     setPrompt("");
@@ -769,7 +772,7 @@ export function ChatPanel({
             value={prompt}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            disabled={streaming}
+            disabled={streaming || composerDisabled}
             placeholder="Ask a medical question…"
             rows={1}
             aria-label="Prompt input"
@@ -796,16 +799,18 @@ export function ChatPanel({
             <Button
               size="sm"
               onClick={handleSend}
-              disabled={!prompt.trim() || overLimit || systemPromptOverLimit}
+              disabled={!prompt.trim() || overLimit || systemPromptOverLimit || composerDisabled}
               title={
                 overLimit
                   ? `Prompt exceeds ${MAX_PROMPT_CHARS} character limit`
                   : systemPromptOverLimit
                     ? `System prompt exceeds ${MAX_SYSTEM_PROMPT_CHARS} character limit`
-                    : undefined
+                    : composerDisabled
+                      ? "Loading patient context…"
+                      : undefined
               }
               aria-label="Send message"
-              aria-disabled={!prompt.trim() || overLimit || systemPromptOverLimit}
+              aria-disabled={!prompt.trim() || overLimit || systemPromptOverLimit || composerDisabled}
               className="shrink-0"
             >
               <Send size={13} />

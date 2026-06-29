@@ -50,7 +50,7 @@ function StatusBadge({ status, failureReason }: { status: DocStatus; failureReas
     queued: { label: "Queued", className: "border-border bg-muted text-muted-foreground" },
     processing: { label: "Processing", className: "border-border bg-muted text-muted-foreground" },
   };
-  const { label, className } = variants[status];
+  const { label, className } = variants[status] ?? { label: status, className: "border-border bg-muted text-muted-foreground" };
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${className}`}
@@ -84,10 +84,17 @@ export default function KnowledgeBasePage() {
   const [reviewDoc, setReviewDoc] = useState<RagDocumentDetail | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [approving, setApproving] = useState(false);
+  // Token to detect stale review fetches (Bug A).
+  const reviewReqRef = useRef(0);
 
   // Delete confirm dialog
   const [deleteTarget, setDeleteTarget] = useState<RagDocument | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Double-submit guards (Bug C).
+  const uploadingRef = useRef(false);
+  const approvingRef = useRef(false);
+  const deletingRef = useRef(false);
 
   // Polling ref
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -167,6 +174,8 @@ export default function KnowledgeBasePage() {
 
   async function handleUpload() {
     if (!uploadFile) return;
+    if (uploadingRef.current) return;
+    uploadingRef.current = true;
     setUploading(true);
     try {
       const form = new FormData();
@@ -179,6 +188,7 @@ export default function KnowledgeBasePage() {
       setUploadTitle("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       const list = await fetchDocs();
+      fetchOverview();
       maybePoll(list);
     } catch (err: unknown) {
       const msg =
@@ -189,6 +199,7 @@ export default function KnowledgeBasePage() {
         "Upload failed.";
       toast.error(msg);
     } finally {
+      uploadingRef.current = false;
       setUploading(false);
     }
   }
@@ -210,30 +221,36 @@ export default function KnowledgeBasePage() {
   // ── Review + Approve ─────────────────────────────────────────────────────
 
   async function openReview(doc: RagDocument) {
+    const token = ++reviewReqRef.current;
     setReviewLoading(true);
     setReviewDoc(null);
     try {
       const r = await api.get<RagDocumentDetail>(`/rag/documents/${doc.documentId}`);
+      if (reviewReqRef.current !== token) return; // dialog closed while in flight
       setReviewDoc(r.data);
     } catch {
-      toast.error("Failed to load document detail.");
+      if (reviewReqRef.current === token) toast.error("Failed to load document detail.");
     } finally {
-      setReviewLoading(false);
+      if (reviewReqRef.current === token) setReviewLoading(false);
     }
   }
 
   async function handleApprove() {
     if (!reviewDoc) return;
+    if (approvingRef.current) return;
+    approvingRef.current = true;
     setApproving(true);
     try {
       await api.post(`/rag/documents/${reviewDoc.documentId}/approve`);
       toast.success("Document approved — now live in the knowledge base.");
       setReviewDoc(null);
       const list = await fetchDocs();
+      fetchOverview();
       maybePoll(list);
     } catch {
       toast.error("Approval failed.");
     } finally {
+      approvingRef.current = false;
       setApproving(false);
     }
   }
@@ -242,6 +259,8 @@ export default function KnowledgeBasePage() {
 
   async function handleDelete() {
     if (!deleteTarget) return;
+    if (deletingRef.current) return;
+    deletingRef.current = true;
     setDeleting(true);
     try {
       // axios delete with body: pass as `data` in config.
@@ -249,10 +268,12 @@ export default function KnowledgeBasePage() {
       toast.success("Document deleted.");
       setDeleteTarget(null);
       const list = await fetchDocs();
+      fetchOverview();
       maybePoll(list);
     } catch {
       toast.error("Delete failed.");
     } finally {
+      deletingRef.current = false;
       setDeleting(false);
     }
   }
@@ -437,7 +458,7 @@ export default function KnowledgeBasePage() {
       </div>
 
       {/* Review sheet (right-side drawer via Dialog with large width override) */}
-      <Dialog open={reviewDoc !== null || reviewLoading} onOpenChange={(open) => { if (!open) setReviewDoc(null); }}>
+      <Dialog open={reviewDoc !== null || reviewLoading} onOpenChange={(open) => { if (!open) { reviewReqRef.current++; setReviewLoading(false); setReviewDoc(null); } }}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>{reviewDoc?.title ?? "Loading…"}</DialogTitle>
