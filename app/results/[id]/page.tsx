@@ -121,7 +121,6 @@ export default function ResultDetailPage() {
                       <TableHead>Biomarker</TableHead>
                       <TableHead>Code</TableHead>
                       <TableHead>Raw Value</TableHead>
-                      <TableHead>Converted</TableHead>
                       <TableHead>Reference Range</TableHead>
                       <TableHead>Indicator</TableHead>
                     </TableRow>
@@ -132,7 +131,6 @@ export default function ResultDetailPage() {
                         <TableCell className="font-medium">{b.biomarkerName}</TableCell>
                         <TableCell className="font-mono text-xs">{b.testCode}</TableCell>
                         <TableCell>{b.rawValue} {b.rawUnit}</TableCell>
-                        <TableCell>{b.convertedValue} {b.convertedUnit}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{b.referenceRange}</TableCell>
                         <TableCell><StatusBadge status={b.indicator} /></TableCell>
                       </TableRow>

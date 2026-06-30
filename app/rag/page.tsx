@@ -445,8 +445,9 @@ export default function KnowledgeBasePage() {
     approvingRef.current = true;
     setApproving(true);
     try {
-      const body: { tablesReviewed?: boolean; sourceDate?: string } = {};
+      const body: { tablesReviewed?: boolean; sourceDate?: string; conflictsAcknowledged?: boolean } = {};
       if (reviewDoc.reviewMode === "forced_side_by_side") body.tablesReviewed = tablesReviewed;
+      if ((conflicts ?? []).length > 0) body.conflictsAcknowledged = conflictsAck;
       if (sourceDate.trim()) body.sourceDate = sourceDate.trim();
       const r = await api.post<ApproveResponse>(`/rag/documents/${reviewDoc.documentId}/approve`, body);
       const vid = r.data.versionId ? r.data.versionId.slice(0, 8) : "updated";
@@ -462,8 +463,15 @@ export default function KnowledgeBasePage() {
       fetchOverview();
       fetchVersion();
       maybePoll(list);
-    } catch {
-      toast.error("Approval failed.");
+    } catch (err: unknown) {
+      const data = (err as { response?: { data?: { code?: string; message?: string } } })?.response?.data;
+      if (data?.code === "tables_not_reviewed") {
+        toast.error("Confirm you've reviewed the tables before approving.");
+      } else if (data?.code === "conflicts_not_acknowledged") {
+        toast.error("Acknowledge the numeric conflicts before approving.");
+      } else {
+        toast.error(data?.message || "Approval failed.");
+      }
     } finally {
       approvingRef.current = false;
       setApproving(false);
