@@ -13,7 +13,8 @@ const colorMap: Record<string, string> = {
   elevated: "bg-orange-500/20 text-orange-400 border-orange-500/30",
 };
 
-export function StatusBadge({ status }: { status: string }) {
+export function StatusBadge({ status }: { status: string | null | undefined }) {
+  if (!status) return null;
   const cls = colorMap[status] ?? "bg-slate-500/20 text-slate-400 border-slate-500/30";
   return (
     <Badge variant="outline" className={`capitalize ${cls}`}>

@@ -37,10 +37,10 @@ interface ResultDetail {
     testCode: string;
     rawValue: string;
     rawUnit: string;
-    convertedValue: string;
-    convertedUnit: string;
-    referenceRange: string;
-    indicator: string;
+    convertedValue: string | null;
+    convertedUnit: string | null;
+    referenceRange: string | null;
+    indicator: string | null;
     validationStatus: string;
   }[];
   aiSuggestions: { text: string; category: string; urgency: string }[];
