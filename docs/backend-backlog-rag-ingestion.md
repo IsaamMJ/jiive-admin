@@ -1,54 +1,88 @@
-# Backend backlog — RAG ingestion quality (batch, then hand off)
+# Handoff → jiive-backend — RAG ingestion: make it prod-grade (one pass)
 
-Running list of RAG-ingestion improvements to hand to the backend team **as a batch**
-(avoid back-and-forth). Report only — no backend changes from us. Add items as we hit them.
+**Date:** 2026-07-01
+**From:** jiive-admin (frontend / head) — report only, no backend changes from us.
+**Goal:** one consolidated pass so a non-technical owner (Juveira) can upload real medical PDFs and
+publish them into the KB reliably. Batched deliberately to avoid back-and-forth. Priority order below.
 
----
-
-## 1. PDF ligature / font-encoding normalization (PRIORITY: HIGH — recurring, hurts KB quality)
-
-**Problem:** many medical/journal PDFs are typeset with fonts whose ligatures don't map back to
-proper Unicode (broken/missing ToUnicode CMap). Text extraction (Docling or any parser) then
-produces garbled glyphs in place of common letter-combos — so the KB would store "arƟcle" instead
-of "article." This corrupts retrieval (embeddings of the garbled token ≠ the real word) and makes
-the LLM cite garbled text to clinicians.
-
-**Real evidence — `Med_sample.pdf` (7-page Indian dyslipidaemia editorial), 244 bad chars (1.4%):**
-
-| Codepoint | Extracted glyph | Should be | Count | Example |
-|---|---|---|---|---|
-| U+019F | Ɵ (O w/ middle tilde) | `ti` | 172 | ar**Ɵ**cle → article; Introduc**Ɵ**on |
-| U+01A9 | Ʃ (esh) | `tt` | 14 | pa**Ʃ**erns → patterns; a**Ʃ**ributable |
-| U+FB01 | fi ligature | `fi` | 23 | |
-| U+FB00 | ff ligature | `ff` | 13 | |
-| U+FB03 | ffi ligature | `ffi` | 4 | |
-| U+FB02 | fl ligature | `fl` | 1 | |
-| U+A78F | ꞏ (sinological dot) | `·` / bullet | 3 | Table-1 bullet markers |
-
-**Outcome wanted:** a normalization pass **after parse, before chunk/embed**, that maps these known
-mis-mapped glyphs back to their intended letters. The common table above covers the bulk; a
-maintainable Unicode-normalization/ligature map handles the rest. (Standard Unicode ligatures
-FB00–FB06 are unambiguous; the font-specific ones — U+019F→`ti`, U+01A9→`tt` — are the ones that
-matter most here.)
-- The **human review gate already catches these** (Juveira sees garbled text and rejects) — but that
-  makes every affected doc un-ingestable. Normalizing lets good clinical PDFs through.
-- Do NOT rewrite content — this is deterministic glyph→letter substitution, not LLM cleanup.
+**Frontend status:** the `app/rag` UI (upload / review / forced side-by-side / gates / bulk / versioning)
+is built, adversarially reviewed, and prod-grade. It surfaces backend errors faithfully. The items
+below are all **backend-side**.
 
 ---
 
-## 2. Text / paste ingestion (PRIORITY: MEDIUM — the cleanest input path)
+## 🔴 P0 — BLOCKER: "Publish failed: Bad Request" on approve
 
-**Problem:** ingestion is **PDF-only** today (magic-byte check rejects everything else). For a
-non-technical owner, the highest-quality, zero-parsing-risk input is to **paste/type clean text**
-directly — no font encoding, no tables to mangle, no ligature issues (item 1 disappears entirely
-for pasted content).
+**Nothing can be published until this is fixed.** Approving a valid, cleanly-parsed doc (6-page
+dyslipidaemia editorial, gates passed) fails on **dev** with `Publish failed: Bad Request`.
 
-**Outcome wanted:** accept a **pasted-text / markdown** document as an ingestion source (in addition
-to PDF) — e.g. a `POST /documents` variant that takes a `text` body + `title`. Same downstream:
-chunk → embed → review → approve. Frontend adds a "paste content" box. Keep source verbatim.
-- Rationale from our design research: verbatim text is the safest medical-RAG input; pasting
-  focused reference notes avoids the whole PDF-parsing failure surface.
+- **Where:** publish step only (parse + gates succeed). `rag-document.service.approveV2` →
+  `rag.upsertDocumentVersion` → `embedBatch()` (OpenAI embeddings) → `qdrant.upsert()`. One threw
+  "Bad Request"; caught + re-thrown as `ConflictException("Publish failed: <reason>")`; doc rolled
+  back to `pending_review` (no corruption).
+- **You have the exact cause in logs:** `RAG approve(v2): document <id> publish error — <reason>`.
+  `<reason>` tells you OpenAI vs Qdrant + the message.
+- **Prime suspects (dev-specific — is prod's publish actually exercised end-to-end yet?):**
+  - **Qdrant collection dimension/config mismatch** — ties to the wrong `EMBEDDING_MODEL` env
+    (`env.ts:90` still `BAAI/bge-large-en-v1.5`; real model is `text-embedding-3-small` @ 1536-dim,
+    `embedding.service.ts:14`). If the dev collection was created for a different dim → upsert 400.
+  - **Empty/whitespace chunk** reaching the embeddings API → OpenAI 400 "input must not be empty".
+- **Definition of done:** a valid PDF approves → `ready`, chunks land in Qdrant, and it's retrievable
+  in the playground. Confirm this works on **both dev and prod** (nobody has published end-to-end on
+  prod yet — please verify, don't assume).
 
 ---
 
-*(append new ingestion-quality items below as they surface)*
+## 🟠 P1 — PDF ligature / font-encoding normalization (quality)
+
+Many medical/journal PDFs have broken font→Unicode maps, so extraction yields garbled glyphs for
+common letter-combos → the KB would store "arƟcle" for "article", corrupting retrieval and citations.
+The human review gate catches these (owner rejects), but that makes every affected PDF un-ingestable.
+
+**Real evidence — `Med_sample.pdf` (7-page editorial), 244 bad chars (1.4%):**
+
+| Codepoint | Glyph | Should be | Count |
+|---|---|---|---|
+| U+019F | Ɵ | `ti` | 172 |
+| U+01A9 | Ʃ | `tt` | 14 |
+| U+FB01 | fi-lig | `fi` | 23 |
+| U+FB00 | ff-lig | `ff` | 13 |
+| U+FB03 | ffi-lig | `ffi` | 4 |
+| U+FB02 | fl-lig | `fl` | 1 |
+| U+A78F | ꞏ | `·` | 3 |
+
+**Outcome:** a deterministic **glyph→letter normalization pass after parse, before chunk/embed**
+(Unicode ligatures FB00–FB06 are unambiguous; add the font-specific ones above). Not LLM cleanup —
+pure substitution, keeps content verbatim.
+**Definition of done:** re-ingesting `Med_sample.pdf` produces clean words (no Ɵ/Ʃ/ligatures) in
+`parsedText` and chunks.
+
+---
+
+## 🟡 P2 — Text / paste ingestion (the cleanest input path)
+
+Ingestion is **PDF-only** today. For a non-technical owner, pasting clean text is the
+highest-quality, zero-parse-risk input — and it makes P1 irrelevant for typed content.
+
+**Outcome:** accept a **pasted text / markdown** source (e.g. `POST /documents` variant taking
+`{ text, title }`) → same downstream (chunk → embed → review → approve). Frontend adds a "paste
+content" box once the endpoint exists. Keep source verbatim.
+
+---
+
+## ✅ Already done (confirm, don't rebuild)
+- **Gate enforcement** (`tables_not_reviewed` / `conflicts_not_acknowledged`, 409) — implemented
+  server-side; frontend sends `tablesReviewed` + `conflictsAcknowledged`. Just confirm it still holds
+  after the P0 fix.
+- **Docling parser + clinical-safety review** — live. One thing to **validate on real samples**:
+  run the team's actual table-heavy medical PDFs (e.g. DGI_2024, RSSDI) through Docling and eyeball
+  that reference-range **tables** come out faithful — this is the whole point of the layout parser.
+
+---
+
+## Suggested order
+1. **P0 publish blocker** (check the dev log line — likely the Qdrant dim / EMBEDDING_MODEL env) —
+   confirm publish works on dev AND prod.
+2. **P1 ligature normalization** — cheap, high-value, recurs on every journal PDF.
+3. **Validate Docling table fidelity** on real samples.
+4. **P2 paste-text** — when you want the cleanest owner input path.
