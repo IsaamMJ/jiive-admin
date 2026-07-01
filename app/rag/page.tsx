@@ -151,9 +151,6 @@ export default function KnowledgeBasePage() {
   const approvingRef = useRef(false);
   const deletingRef = useRef(false);
 
-  // Polling ref (main docs list)
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   // Revoke a PDF blob URL and update both ref + state.
@@ -217,28 +214,15 @@ export default function KnowledgeBasePage() {
   }, []);
 
   // ── Polling: main docs list ───────────────────────────────────────────────
-
-  const pollRef = useRef<() => void>(() => { /* set below */ });
+  // Arms one timer whenever any doc is in-progress. React re-runs the effect
+  // each time fetchDocs() updates `docs`, so exactly one timer is live at a
+  // time. Cleanup cancels the pending tick on every re-run and on unmount.
 
   useEffect(() => {
-    pollRef.current = () => {
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = setTimeout(() => {
-        if (document.hidden) { pollRef.current(); return; }
-        fetchDocs().then((list) => {
-          if (list.some((d) => isInProgress(d.status))) {
-            pollRef.current();
-          }
-        });
-      }, POLL_MS);
-    };
-  });
-
-  const maybePoll = useCallback((list: RagDocument[]) => {
-    if (list.some((d) => isInProgress(d.status))) {
-      pollRef.current();
-    }
-  }, []);
+    if (!docs.some((d) => isInProgress(d.status))) return;
+    const t = setTimeout(() => { if (!document.hidden) fetchDocs(); }, POLL_MS);
+    return () => clearTimeout(t);
+  }, [docs, fetchDocs]);
 
   // ── Batch polling (v2) ────────────────────────────────────────────────────
 
@@ -254,7 +238,7 @@ export default function KnowledgeBasePage() {
         if (stillPending) pollBatch(batchId);
         else {
           // When batch settles, refresh the main docs list too.
-          fetchDocs().then(maybePoll);
+          fetchDocs();
           fetchOverview();
           fetchVersion();
         }
@@ -265,11 +249,10 @@ export default function KnowledgeBasePage() {
   }
 
   useEffect(() => {
-    fetchDocs().then(maybePoll);
+    fetchDocs();
     fetchOverview();
     fetchVersion();
     return () => {
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
       if (batchPollTimerRef.current) clearTimeout(batchPollTimerRef.current);
       if (pdfObjectUrlRef.current) URL.revokeObjectURL(pdfObjectUrlRef.current);
     };
@@ -307,9 +290,8 @@ export default function KnowledgeBasePage() {
       setUploadFile(null);
       setUploadTitle("");
       if (fileInputRef.current) fileInputRef.current.value = "";
-      const list = await fetchDocs();
+      fetchDocs();
       fetchOverview();
-      maybePoll(list);
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { message?: string; error?: string } } })
@@ -374,10 +356,9 @@ export default function KnowledgeBasePage() {
       if (r.data.batchId) {
         pollBatch(r.data.batchId);
       }
-      const list = await fetchDocs();
+      fetchDocs();
       fetchOverview();
       fetchVersion();
-      maybePoll(list);
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
@@ -459,10 +440,9 @@ export default function KnowledgeBasePage() {
           .catch(() => {});
       }
       closeReview();
-      const list = await fetchDocs();
+      fetchDocs();
       fetchOverview();
       fetchVersion();
-      maybePoll(list);
     } catch (err: unknown) {
       const data = (err as { response?: { data?: { code?: string; message?: string } } })?.response?.data;
       if (data?.code === "tables_not_reviewed") {
@@ -490,10 +470,9 @@ export default function KnowledgeBasePage() {
       await api.delete(`/rag/documents/${deleteTarget.documentId}`, { data: { confirm: true } });
       toast.success("Document deleted.");
       setDeleteTarget(null);
-      const list = await fetchDocs();
+      fetchDocs();
       fetchOverview();
       fetchVersion();
-      maybePoll(list);
     } catch {
       toast.error("Delete failed.");
     } finally {
