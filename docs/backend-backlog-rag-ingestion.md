@@ -70,6 +70,21 @@ content" box once the endpoint exists. Keep source verbatim.
 
 ---
 
+## 🟠 P1b — Single upload should be ASYNC (large PDFs time out at the gateway)
+
+**Symptom:** uploading a large PDF (e.g. RSSDI, 236 pages / 2.3 MB) via **single upload** spins
+forever, then fails. `POST /documents` is **synchronous through parse** — it doesn't respond until
+Docling finishes the whole document (minutes for a big file), so the request **times out at the
+gateway (~30–60s)** → the operator sees "Upload failed" with no useful reason.
+
+- **Bulk upload already works** (it returns a `batchId` immediately and parses in the background) —
+  so the async pattern already exists; single upload just doesn't use it.
+- **Outcome:** make `POST /documents` return **immediately** with `{ documentId, status: 'processing' }`
+  and parse in the background (same as bulk), so the row appears right away and the client polls it to
+  `pending_review`/`failed`. This eliminates the gateway-timeout entirely for any file size.
+- Frontend has been hardened (3-min client timeout + "large PDFs take a while" messaging + a nudge to
+  use Bulk upload for big files), but the durable fix is async single-upload.
+
 ## ✅ Already done (confirm, don't rebuild)
 - **Gate enforcement** (`tables_not_reviewed` / `conflicts_not_acknowledged`, 409) — implemented
   server-side; frontend sends `tablesReviewed` + `conflictsAcknowledged`. Just confirm it still holds

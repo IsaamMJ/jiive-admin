@@ -273,6 +273,9 @@ export default function KnowledgeBasePage() {
     }
     setUploadFile(file);
     if (!uploadTitle) setUploadTitle(file.name.replace(/\.pdf$/i, ""));
+    if (file.size > 5 * 1024 * 1024) {
+      toast.info("Large file — consider Bulk upload for background processing (avoids upload timeouts).");
+    }
   }
 
   async function handleUpload() {
@@ -285,7 +288,9 @@ export default function KnowledgeBasePage() {
       form.append("file", uploadFile);
       if (uploadTitle.trim()) form.append("title", uploadTitle.trim());
       // Do NOT set Content-Type manually — axios sets the multipart boundary.
-      await api.post("/rag/documents", form);
+      // Large PDFs parse synchronously on the backend (Docling) and can take
+      // minutes — give this request room before axios gives up.
+      await api.post("/rag/documents", form, { timeout: 180_000 });
       toast.success("Document uploaded — awaiting review.");
       setUploadFile(null);
       setUploadTitle("");
@@ -293,13 +298,18 @@ export default function KnowledgeBasePage() {
       fetchDocs();
       fetchOverview();
     } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { message?: string; error?: string } } })
-          ?.response?.data?.message ??
-        (err as { response?: { data?: { error?: string } } })
-          ?.response?.data?.error ??
-        "Upload failed.";
-      toast.error(msg);
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if ((err as { code?: string })?.code === "ECONNABORTED" || status === 504 || status === 502 || status === 408) {
+        // Client/gateway timed out, but the backend may still be parsing —
+        // the doc could already exist in a processing/pending_review state.
+        toast.error(
+          "This PDF is large and the upload timed out. It may still be processing — check the documents list in a minute, or use Bulk upload (it processes in the background)."
+        );
+        fetchDocs();
+      } else {
+        const data = (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
+        toast.error(data?.message ?? data?.error ?? "Upload failed.");
+      }
     } finally {
       uploadingRef.current = false;
       setUploading(false);
@@ -587,7 +597,7 @@ export default function KnowledgeBasePage() {
                     disabled={uploading}
                   />
                   <Button onClick={handleUpload} disabled={uploading}>
-                    {uploading ? <><Loader2 size={14} className="animate-spin mr-2" />Uploading…</> : "Upload"}
+                    {uploading ? <><Loader2 size={14} className="animate-spin mr-2" />Processing…</> : "Upload"}
                   </Button>
                   <Button
                     variant="outline"
@@ -601,6 +611,11 @@ export default function KnowledgeBasePage() {
                     Cancel
                   </Button>
                 </div>
+              )}
+              {uploading && (
+                <p className="text-xs text-muted-foreground">
+                  Large PDFs can take a minute or two to parse — please wait.
+                </p>
               )}
             </div>
           </CardContent>
