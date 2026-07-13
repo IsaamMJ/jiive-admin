@@ -17,14 +17,9 @@ import {
 } from "@/components/ui/table";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
-import { incidentErrorMessage, listIncidents, listOpenActions } from "./api";
+import { getRcaOwed, incidentErrorMessage, listIncidents, listOpenActions } from "./api";
 import {
-  CATEGORY_LABEL,
-  INCIDENT_CATEGORIES,
-  INCIDENT_SEVERITIES,
-  INCIDENT_STATUSES,
-  INCIDENT_VENDORS,
-  VENDOR_LABEL,
+  SEVERITY_LABEL,
   type IncidentCategory,
   type IncidentListParams,
   type IncidentSeverity,
@@ -38,27 +33,41 @@ import { FileIncidentDialog, type FilePrefill } from "./components/FileIncidentD
 import { SuspectedIncidentsPanel } from "./components/SuspectedIncidentsPanel";
 import { OpenActionsDialog } from "./components/OpenActionsDialog";
 import { formatDateTime } from "./lib/datetime";
+import { useIncidentMeta } from "./lib/useIncidentMeta";
 
 const PAGE_SIZE = 50;
 
-type StatusFilter = IncidentStatus | "not_closed" | "all";
+/**
+ * The backend's `status` filter takes ONE value and rejects unknown query keys
+ * outright (400), so "everything except CLOSED" is not expressible server-side —
+ * there is no excludeClosed, and no multi-status. Guessing one took the whole
+ * list down until it was caught in a browser.
+ *
+ * So: default to "all" (hide nothing), and offer the three real statuses. The
+ * RCA-owed badge narrows to RESOLVED, which is exactly where an RCA obligation
+ * lives — an incident is RESOLVED (customer whole) but not yet CLOSED (cause
+ * dealt with). If the backend later adds excludeClosed, restore it as the default.
+ */
+type StatusFilter = IncidentStatus | "all";
 
 export default function IncidentsPage() {
   const router = useRouter();
+
+  // Filter vocabulary comes from the server (GET /incidents/meta) so it can never
+  // drift from what the backend will actually accept.
+  const { meta } = useIncidentMeta();
 
   const [incidents, setIncidents] = useState<IncidentSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Default view: everything not CLOSED.
-  const [status, setStatus] = useState<StatusFilter>("not_closed");
+  const [status, setStatus] = useState<StatusFilter>("all");
   const [severity, setSeverity] = useState<IncidentSeverity | "all">("all");
   const [category, setCategory] = useState<IncidentCategory | "all">("all");
   const [vendor, setVendor] = useState<IncidentVendor | "all">("all");
   const [occurredFrom, setOccurredFrom] = useState("");
   const [occurredTo, setOccurredTo] = useState("");
-  const [rcaOwedOnly, setRcaOwedOnly] = useState(false);
   const [offset, setOffset] = useState(0);
 
   // Top-strip counters.
@@ -77,14 +86,13 @@ export default function IncidentsPage() {
   const load = useCallback(() => {
     setLoading(true);
     const params: IncidentListParams = { limit: PAGE_SIZE, offset };
-    if (status === "not_closed") params.excludeClosed = true;
-    else if (status !== "all") params.status = status;
+    // Only keys verified against the live backend — it 400s on anything else.
+    if (status !== "all") params.status = status;
     if (severity !== "all") params.severity = severity;
     if (category !== "all") params.category = category;
     if (vendor !== "all") params.vendor = vendor;
-    if (occurredFrom) params.occurredFrom = occurredFrom;
-    if (occurredTo) params.occurredTo = occurredTo;
-    if (rcaOwedOnly) params.rcaOwed = true;
+    if (occurredFrom) params.from = occurredFrom;
+    if (occurredTo) params.to = occurredTo;
 
     listIncidents(params)
       .then((r) => {
@@ -98,18 +106,20 @@ export default function IncidentsPage() {
         setError(incidentErrorMessage(err));
       })
       .finally(() => setLoading(false));
-  }, [offset, status, severity, category, vendor, occurredFrom, occurredTo, rcaOwedOnly]);
+  }, [offset, status, severity, category, vendor, occurredFrom, occurredTo]);
 
   useEffect(() => {
     const t = setTimeout(load, 250);
     return () => clearTimeout(t);
   }, [load]);
 
-  // RCA-owed count is a separate, cheap query so the badge is right regardless of
-  // the filters currently applied to the table.
+  // The RCA-owed count comes from GET /incidents/rca-owed — the endpoint that owns
+  // the definition of "owed" — rather than from a filtered /incidents query. It is
+  // its own call so the badge stays correct regardless of the table's filters, and
+  // so the number here always agrees with the rule the overdue-RCA email fires on.
   const loadCounters = useCallback(() => {
-    listIncidents({ rcaOwed: true, limit: 1 })
-      .then((r) => setRcaOwedCount(r.total))
+    getRcaOwed()
+      .then((r) => setRcaOwedCount(r.count))
       .catch(() => setRcaOwedCount(null));
 
     setActionsLoading(true);
@@ -127,6 +137,16 @@ export default function IncidentsPage() {
   }, [loadCounters]);
 
   const overdueCount = openActions.filter((a) => a.overdue).length;
+
+  // Per-incident overdue counts, counted from the cross-incident open-actions list
+  // we already have. The list rows don't carry this, and inventing a number from
+  // the row's `_count` (which counts ALL actions, not overdue ones) would be worse
+  // than not showing it.
+  const overdueByIncident = new Map<string, number>();
+  for (const a of openActions) {
+    if (a.overdue) overdueByIncident.set(a.incidentId, (overdueByIncident.get(a.incidentId) ?? 0) + 1);
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const page = Math.floor(offset / PAGE_SIZE);
 
@@ -147,10 +167,13 @@ export default function IncidentsPage() {
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            onClick={() => { setRcaOwedOnly(true); setStatus("all"); setOffset(0); }}
+            // There's no server-side rcaOwed filter (it 400s). An RCA is owed exactly
+            // when an incident is RESOLVED but not yet CLOSED, so narrow to RESOLVED —
+            // and the row-level rcaOverdue flag does the rest.
+            onClick={() => { setStatus("RESOLVED"); setOffset(0); }}
             className={cn(
               "flex min-h-11 flex-1 items-center gap-3 rounded-xl border px-4 py-2.5 text-left transition-colors sm:flex-none",
-              rcaOwedOnly
+              status === "RESOLVED"
                 ? "border-amber-500 bg-amber-500/20"
                 : "border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20"
             )}
@@ -191,13 +214,13 @@ export default function IncidentsPage() {
             </span>
           </button>
 
-          {rcaOwedOnly && (
+          {status !== "all" && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => { setRcaOwedOnly(false); setStatus("not_closed"); setOffset(0); }}
+              onClick={() => { setStatus("all"); setOffset(0); }}
             >
-              Clear RCA filter
+              Clear filter
             </Button>
           )}
 
@@ -211,41 +234,77 @@ export default function IncidentsPage() {
 
         {/* Filters */}
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={status} onValueChange={(v) => resetPaging(setStatus)((v as StatusFilter) ?? "not_closed")}>
-            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+          <Select value={status} onValueChange={(v) => resetPaging(setStatus)((v as StatusFilter) ?? "all")}>
+            <SelectTrigger className="w-44">
+              <SelectValue>
+                {(v: unknown) =>
+                  v === "all"
+                    ? "All statuses"
+                    : (meta.statuses.find((s) => s.value === v)?.label ?? String(v))
+                }
+              </SelectValue>
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value="not_closed">Not closed</SelectItem>
               <SelectItem value="all">All statuses</SelectItem>
-              {INCIDENT_STATUSES.map((s) => (
-                <SelectItem key={s} value={s}>{s.charAt(0) + s.slice(1).toLowerCase()}</SelectItem>
+              {meta.statuses.map((s) => (
+                <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
 
           <Select value={severity} onValueChange={(v) => resetPaging(setSeverity)((v as IncidentSeverity) ?? "all")}>
-            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-40">
+              <SelectValue>
+                {(v: unknown) =>
+                  v === "all"
+                    ? "All severities"
+                    : `${String(v)}${SEVERITY_LABEL[v as IncidentSeverity] ? ` · ${SEVERITY_LABEL[v as IncidentSeverity]}` : ""}`
+                }
+              </SelectValue>
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All severities</SelectItem>
-              {INCIDENT_SEVERITIES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              {meta.severities.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  {s.value}
+                  {SEVERITY_LABEL[s.value] ? ` · ${s.label}` : ""}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
 
           <Select value={category} onValueChange={(v) => resetPaging(setCategory)((v as IncidentCategory) ?? "all")}>
-            <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-52">
+              <SelectValue>
+                {(v: unknown) =>
+                  v === "all"
+                    ? "All categories"
+                    : (meta.categories.find((c) => c.value === v)?.label ?? String(v))
+                }
+              </SelectValue>
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All categories</SelectItem>
-              {INCIDENT_CATEGORIES.map((c) => (
-                <SelectItem key={c} value={c}>{CATEGORY_LABEL[c]}</SelectItem>
+              {meta.categories.map((c) => (
+                <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
 
           <Select value={vendor} onValueChange={(v) => resetPaging(setVendor)((v as IncidentVendor) ?? "all")}>
-            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-40">
+              <SelectValue>
+                {(v: unknown) =>
+                  v === "all"
+                    ? "All vendors"
+                    : (meta.vendors.find((x) => x.value === v)?.label ?? String(v))
+                }
+              </SelectValue>
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All vendors</SelectItem>
-              {INCIDENT_VENDORS.map((v2) => (
-                <SelectItem key={v2} value={v2}>{VENDOR_LABEL[v2]}</SelectItem>
+              {meta.vendors.map((v2) => (
+                <SelectItem key={v2.value} value={v2.value}>{v2.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -322,7 +381,9 @@ export default function IncidentsPage() {
                         </div>
                       </TableCell>
                     </TableRow>
-                  ) : incidents.map((i) => (
+                  ) : incidents.map((i) => {
+                    const overdueActions = overdueByIncident.get(i.id) ?? 0;
+                    return (
                     <TableRow
                       key={i.id}
                       onClick={() => router.push(`/incidents/${i.id}`)}
@@ -331,9 +392,9 @@ export default function IncidentsPage() {
                       <TableCell className="whitespace-nowrap font-mono text-xs font-semibold">{i.ref}</TableCell>
                       <TableCell className="max-w-xs">
                         <span className="line-clamp-2 text-sm">{i.title}</span>
-                        {i.overdueActionCount > 0 && (
+                        {overdueActions > 0 && (
                           <span className="text-xs font-medium text-red-400">
-                            {i.overdueActionCount} overdue action{i.overdueActionCount !== 1 ? "s" : ""}
+                            {overdueActions} overdue action{overdueActions !== 1 ? "s" : ""}
                           </span>
                         )}
                       </TableCell>
@@ -341,11 +402,15 @@ export default function IncidentsPage() {
                       <TableCell>
                         <div className="flex flex-col items-start gap-1">
                           <IncidentStatusBadge status={i.status} />
-                          {i.rcaOwed && (
+                          {i.rcaOverdue ? (
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-red-400">
+                              RCA overdue
+                            </span>
+                          ) : i.rcaOwed ? (
                             <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-400">
                               RCA owed
                             </span>
-                          )}
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell><CategoryBadge category={i.category} /></TableCell>
@@ -363,7 +428,8 @@ export default function IncidentsPage() {
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{i.owner?.name ?? "Unassigned"}</TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

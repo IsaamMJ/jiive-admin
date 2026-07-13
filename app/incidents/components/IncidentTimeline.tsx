@@ -7,53 +7,19 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { InfoTip } from "@/components/InfoTip";
-import { addTimelineEntry, fetchAttachmentBlob, incidentErrorMessage } from "../api";
+import { addTimelineEntry, incidentErrorMessage } from "../api";
 import {
   ALLOWED_ATTACHMENT_TYPES,
+  ATTACHMENT_ACCEPT,
   MAX_ATTACHMENT_BYTES,
   type IncidentDetail,
-  type TimelineAttachment,
   type TimelineEntry,
 } from "../types";
+import { AttachmentThumb } from "./AttachmentThumb";
 import { datetimeLocalToIso, formatDateTime, toDatetimeLocalValue } from "../lib/datetime";
 
 /** Entries written more than a few minutes after the moment they describe were back-dated. */
 const BACKDATE_THRESHOLD_MS = 5 * 60_000;
-
-/**
- * Attachments are served from an admin-auth'd endpoint (Round 2 R1), so a bare
- * <a href> would 401. Fetch the bytes through the API client, then open the blob.
- */
-function AttachmentLink({ attachment }: { attachment: TimelineAttachment }) {
-  const [opening, setOpening] = useState(false);
-
-  async function open() {
-    if (opening) return;
-    setOpening(true);
-    try {
-      const objectUrl = await fetchAttachmentBlob(attachment.url);
-      window.open(objectUrl, "_blank", "noopener,noreferrer");
-      // The new tab holds its own reference; release ours once it has loaded.
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-    } catch (err: unknown) {
-      toast.error(incidentErrorMessage(err));
-    } finally {
-      setOpening(false);
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={open}
-      disabled={opening}
-      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-    >
-      {opening ? <Loader2 size={12} className="animate-spin" /> : <Paperclip size={12} />}
-      {attachment.filename ?? "attachment"}
-    </button>
-  );
-}
 
 function Entry({ entry }: { entry: TimelineEntry }) {
   const backdated =
@@ -77,7 +43,7 @@ function Entry({ entry }: { entry: TimelineEntry }) {
       <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed">{entry.body}</p>
       {entry.attachments.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
-          {entry.attachments.map((a) => <AttachmentLink key={a.id} attachment={a} />)}
+          {entry.attachments.map((a) => <AttachmentThumb key={a.id} attachment={a} />)}
         </div>
       )}
     </li>
@@ -121,18 +87,30 @@ export function IncidentTimeline({ incident, onUpdated }: Props) {
       ? "That timestamp is in the future."
       : null;
 
+  /**
+   * Allowlist, not "any image/*": PNG, JPEG and WebP only. GIF and SVG are both
+   * out — SVG because it is an image to the operator and an executable script to
+   * the browser, and we would be serving it back from our own origin to a logged-in
+   * admin.
+   *
+   * This is a UX courtesy, NOT a security control. The server is the real gate and
+   * it sniffs the magic bytes — it trusts neither the filename nor `f.type`, both
+   * of which are trivially forged. All this does is tell the operator immediately,
+   * instead of letting them wait out an upload that was always going to be refused.
+   */
   function addImages(list: FileList | null) {
     if (!list || list.length === 0) return;
     const picked: File[] = [];
     for (const f of Array.from(list)) {
-      // Allowlist, not "any image/*". SVG is excluded deliberately — the server
-      // sniffs the bytes and rejects it too; this just fails fast and explains why.
       if (!(ALLOWED_ATTACHMENT_TYPES as readonly string[]).includes(f.type)) {
-        toast.error(`${f.name} — only PNG, JPEG and WebP are accepted (SVG is not, for security).`);
+        // f.type is "" when the OS can't guess the type — still a refusal, but the
+        // operator deserves to know we simply couldn't tell what it was.
+        const what = f.type === "" ? "that file type" : f.type;
+        toast.error(`${f.name} — ${what} isn't accepted. Attach a PNG, JPEG or WebP screenshot.`);
         continue;
       }
       if (f.size > MAX_ATTACHMENT_BYTES) {
-        toast.error(`${f.name} is over 5 MB — skipped.`);
+        toast.error(`${f.name} is over the 5 MB limit — skipped.`);
         continue;
       }
       picked.push(f);
@@ -234,7 +212,7 @@ export function IncidentTimeline({ incident, onUpdated }: Props) {
             <input
               ref={fileRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              accept={ATTACHMENT_ACCEPT}
               multiple
               hidden
               onChange={(e) => addImages(e.target.files)}
@@ -250,6 +228,7 @@ export function IncidentTimeline({ incident, onUpdated }: Props) {
               <Paperclip size={14} className="mr-1.5" />
               Attach images
             </Button>
+            <InfoTip label="PNG, JPEG or WebP, up to 5 MB each. GIF and SVG are refused — an SVG is an image to you and a script to the browser, and we'd be serving it back to a logged-in admin from our own site." />
 
             <div className="flex flex-1 items-center justify-end gap-2">
               {disabledReason && body !== "" && (

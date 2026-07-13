@@ -16,17 +16,17 @@ import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
 import { fileIncident, incidentErrorMessage } from "../api";
 import {
-  CATEGORY_LABEL,
-  INCIDENT_CATEGORIES,
-  INCIDENT_SEVERITIES,
   SEVERITY_HINT,
-  SEVERITY_LABEL,
+  suggestVendor,
+  VENDOR_SHORT_LABEL,
   type IncidentCategory,
   type IncidentSeverity,
   type IncidentSummary,
+  type IncidentVendor,
 } from "../types";
 import { SEVERITY_EXPLAINER } from "./IncidentBadges";
 import { datetimeLocalToIso, toDatetimeLocalValue } from "../lib/datetime";
+import { useIncidentMeta } from "../lib/useIncidentMeta";
 
 export interface FilePrefill {
   whatHappened?: string;
@@ -72,12 +72,21 @@ function deriveTitle(whatHappened: string): string {
  * after the fire is out, and forcing now() would destroy the chronology.
  */
 export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Props) {
+  // Severity and category vocabularies come from the server. If that call fails we
+  // fall back to the local constants and say so — a meta lookup must never be able
+  // to take incident filing down with it.
+  const { meta, degraded: metaDegraded } = useIncidentMeta();
+
   const [whatHappened, setWhatHappened] = useState(prefill?.whatHappened ?? "");
   const [title, setTitle] = useState(prefill?.title ?? "");
   const [titleTouched, setTitleTouched] = useState(Boolean(prefill?.title));
   const [severity, setSeverity] = useState<IncidentSeverity | null>(prefill?.severity ?? null);
   const [category, setCategory] = useState<IncidentCategory | null>(prefill?.category ?? null);
   const [orderIdsRaw, setOrderIdsRaw] = useState((prefill?.orderIds ?? []).join(", "));
+  // Vendor is pre-selected from the category and only becomes "sticky" once the
+  // operator actually touches it — so picking a category keeps re-suggesting,
+  // but an explicit override is never silently overwritten.
+  const [vendor, setVendor] = useState<IncidentVendor | null>(null);
   const [occurredAt, setOccurredAt] = useState(() => toDatetimeLocalValue(new Date()));
   // "Is this in the future?" is computed when the field changes, never during
   // render — reading the clock while rendering is impure and makes the output
@@ -96,6 +105,10 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
 
   const orderIds = parseOrderIds(orderIdsRaw);
   const occurredIso = datetimeLocalToIso(occurredAt);
+  // An untouched vendor tracks the category. This is the field the Thyrocare
+  // scorecard is counted on, and the server defaults an unsent one to "none" —
+  // so it is ALWAYS sent, and it is never left to the operator to remember.
+  const effectiveVendor: IncidentVendor = vendor ?? suggestVendor(category);
   // Auto-suggest the title from the first line of the paste until the operator
   // touches the field themselves. One less thing to type at 8:50am.
   const effectiveTitle = titleTouched ? title : deriveTitle(whatHappened);
@@ -129,7 +142,10 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
         category,
         occurredAt: occurredIso,
         whatHappened,
-        affectedOrderIds: orderIds,
+        // `orderIds` on the way in, `affectedOrderIds` on the way back out. The
+        // asymmetry is the live contract, not a typo.
+        orderIds,
+        vendor: effectiveVendor,
       });
       toast.success(`${incident.ref} filed.`);
       onFiled?.(incident);
@@ -203,24 +219,26 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
               <InfoTip label={SEVERITY_EXPLAINER} />
             </span>
             <div className="grid grid-cols-2 gap-2">
-              {INCIDENT_SEVERITIES.map((s) => (
+              {meta.severities.map((s) => (
                 <button
-                  key={s}
+                  key={s.value}
                   type="button"
-                  data-on={severity === s}
-                  aria-pressed={severity === s}
+                  data-on={severity === s.value}
+                  aria-pressed={severity === s.value}
                   disabled={submitting}
-                  onClick={() => setSeverity(s)}
+                  onClick={() => setSeverity(s.value)}
                   className={cn(
                     "flex min-h-16 flex-col items-start justify-center gap-0.5 rounded-xl border border-border bg-card px-3 py-2 text-left transition-colors",
                     "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
-                    SEVERITY_TILE[s]
+                    SEVERITY_TILE[s.value] ?? "data-[on=true]:border-primary data-[on=true]:bg-primary/15"
                   )}
                 >
                   <span className="text-sm font-semibold">
-                    {s} · {SEVERITY_LABEL[s]}
+                    {s.value} · {s.label}
                   </span>
-                  <span className="text-[11px] leading-tight text-muted-foreground">{SEVERITY_HINT[s]}</span>
+                  <span className="text-[11px] leading-tight text-muted-foreground">
+                    {SEVERITY_HINT[s.value] ?? ""}
+                  </span>
                 </button>
               ))}
             </div>
@@ -233,25 +251,64 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
               <InfoTip label="A fixed list, on purpose. This is the field that makes “how many phlebo no-shows did Thyrocare have this quarter?” a single query. Free-text tags would never add up." />
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {INCIDENT_CATEGORIES.map((c) => (
+              {meta.categories.map((c) => (
                 <button
-                  key={c}
+                  key={c.value}
                   type="button"
-                  aria-pressed={category === c}
+                  aria-pressed={category === c.value}
                   disabled={submitting}
-                  onClick={() => setCategory(c)}
+                  onClick={() => setCategory(c.value)}
                   className={cn(
                     "min-h-9 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
-                    category === c
+                    category === c.value
                       ? "border-primary bg-primary/15 text-primary"
                       : "border-border text-muted-foreground hover:bg-accent"
                   )}
                 >
-                  {CATEGORY_LABEL[c]}
+                  {c.label}
                 </button>
               ))}
             </div>
+            {metaDegraded && (
+              <span className="text-xs text-muted-foreground">
+                Couldn{"'"}t reach the server{"'"}s category list — showing the built-in one. Filing still works.
+              </span>
+            )}
+          </div>
+
+          {/* Vendor — pre-selected from the category, one tap to override.
+              Never a required decision, but ALWAYS sent. */}
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-sm font-medium">
+              Who does this land on?
+              <InfoTip label="This is what makes the Thyrocare scorecard countable — if it's wrong, the vendor numbers are wrong. We pre-select it from the category; change it if we guessed wrong." />
+            </span>
+            <div className="flex gap-1.5">
+              {(["thyrocare", "internal", "none"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={effectiveVendor === v}
+                  disabled={submitting}
+                  onClick={() => setVendor(v)}
+                  className={cn(
+                    "min-h-10 flex-1 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                    effectiveVendor === v
+                      ? "border-primary bg-primary/15 text-primary"
+                      : "border-border text-muted-foreground hover:bg-accent"
+                  )}
+                >
+                  {VENDOR_SHORT_LABEL[v]}
+                </button>
+              ))}
+            </div>
+            {vendor === null && category !== null && (
+              <span className="text-xs text-muted-foreground">
+                Suggested from the category — tap to change it.
+              </span>
+            )}
           </div>
 
           {/* 5 — When it happened. Defaults to now, back-datable. */}

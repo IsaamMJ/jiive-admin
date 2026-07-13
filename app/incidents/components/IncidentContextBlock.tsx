@@ -22,9 +22,12 @@ function formatAddress(a: IncidentAddress): string {
  * "Nagarcoil + pincode" is what reached a live order on June 21. An address is
  * suspect when a line, the city, the state or the pincode is missing — or when
  * the street line is too short to be a real one.
+ *
+ * Only called when we actually HAVE an address. "The server didn't send one" is
+ * not the same claim as "the booking has no address", and crying wolf on every
+ * incident is how a real warning stops being read.
  */
-function addressGaps(a: IncidentAddress | null): string[] {
-  if (!a) return ["No address on the booking at all."];
+function addressGaps(a: IncidentAddress): string[] {
   const gaps: string[] = [];
   if (!a.addressLine1?.trim()) gaps.push("no street address");
   else if (a.addressLine1.trim().length < 10) gaps.push("street address is suspiciously short");
@@ -86,7 +89,7 @@ export function IncidentContextBlock({ context }: { context: IncidentContext }) 
 
   const orderCount = allBookings.length;
   const vials = orderCount * VIALS_PER_ORDER;
-  const gaps = addressGaps(address);
+  const gaps = address ? addressGaps(address) : [];
 
   // Phlebo details live on the booking; take the first one that has them.
   const phleboName = allBookings.find((b) => b.phleboName)?.phleboName ?? null;
@@ -162,7 +165,9 @@ export function IncidentContextBlock({ context }: { context: IncidentContext }) 
           <div className="flex flex-col gap-1 sm:col-span-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Address</span>
             <span className="text-sm">
-              {address && formatAddress(address) ? formatAddress(address) : "—"}
+              {address && formatAddress(address)
+                ? formatAddress(address)
+                : "Not returned with this incident."}
             </span>
           </div>
         </div>

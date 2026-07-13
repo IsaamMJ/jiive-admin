@@ -16,9 +16,6 @@ import {
 import { InfoTip } from "@/components/InfoTip";
 import { getIncident, incidentErrorMessage, listAdmins, updateIncident } from "../api";
 import {
-  INCIDENT_SEVERITIES,
-  RCA_REQUIRED_SEVERITIES,
-  SEVERITY_LABEL,
   type IncidentDetail,
   type IncidentSeverity,
   type IncidentStatus,
@@ -34,11 +31,15 @@ import { IncidentContextBlock } from "../components/IncidentContextBlock";
 import { IncidentTimeline } from "../components/IncidentTimeline";
 import { IncidentRcaBlock } from "../components/IncidentRcaBlock";
 import { describeDetectionGap, formatDateTime } from "../lib/datetime";
+import { useIncidentMeta } from "../lib/useIncidentMeta";
 
 export default function IncidentDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const id = params?.id;
+
+  // Re-grading uses the server's severity vocabulary, not a local copy of it.
+  const { meta } = useIncidentMeta();
 
   const [incident, setIncident] = useState<IncidentDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -122,14 +123,16 @@ export default function IncidentDetailPage() {
     );
   }
 
-  const rcaRequired = RCA_REQUIRED_SEVERITIES.includes(incident.severity);
   const hasFactors = incident.contributingFactors.length > 0;
-  // S0/S3 may skip straight to CLOSED. S1/S2 must have the cause written down
-  // first — that gate is the entire reason RESOLVED and CLOSED are separate states.
-  const closeBlockedReason: string | null =
-    rcaRequired && !hasFactors
-      ? "Write at least one contributing factor before closing this."
-      : null;
+
+  // Closing with no cause written down is a hard 400 from the server — for every
+  // severity, not just S1/S2. So the button is disabled until at least one
+  // contributing factor exists, and it says why. Getting a 400 back would work
+  // (we surface the server's message verbatim), but being refused after clicking
+  // teaches nothing; a disabled button that explains itself teaches the rule.
+  const closeBlockedReason: string | null = hasFactors
+    ? null
+    : "Add at least one contributing factor below before closing. Closing is the record that we know WHY it happened — that's what makes it different from resolving.";
 
   const gap = describeDetectionGap(incident.occurredAt, incident.reportedAt);
 
@@ -137,9 +140,7 @@ export default function IncidentDetailPage() {
     incident.status === "OPEN"
       ? [
           { to: "RESOLVED", label: "Mark resolved", blocked: null },
-          ...(rcaRequired
-            ? []
-            : [{ to: "CLOSED" as IncidentStatus, label: "Close", blocked: null }]),
+          { to: "CLOSED", label: "Close", blocked: closeBlockedReason },
         ]
       : incident.status === "RESOLVED"
       ? [{ to: "CLOSED", label: "Close", blocked: closeBlockedReason }]
@@ -169,11 +170,15 @@ export default function IncidentDetailPage() {
                 <InfoTip label={STATUS_EXPLAINER} />
                 <CategoryBadge category={incident.category} />
                 <VendorBadge vendor={incident.vendor} />
-                {incident.rcaOwed && (
-                  <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400">
-                    RCA owed
+                {incident.rcaOverdue ? (
+                  <span className="rounded-full border border-red-500/40 bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-400">
+                    RCA overdue
                   </span>
-                )}
+                ) : incident.rcaOwed ? (
+                  <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400">
+                    RCA owed{incident.rcaDueAt ? ` · due ${formatDateTime(incident.rcaDueAt)}` : ""}
+                  </span>
+                ) : null}
               </div>
               <CardTitle className="text-lg leading-snug">{incident.title}</CardTitle>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -256,8 +261,8 @@ export default function IncidentDetailPage() {
                 >
                   <SelectTrigger className="w-full sm:w-56"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {INCIDENT_SEVERITIES.map((s) => (
-                      <SelectItem key={s} value={s}>{s} · {SEVERITY_LABEL[s]}</SelectItem>
+                    {meta.severities.map((s) => (
+                      <SelectItem key={s.value} value={s.value}>{s.value} · {s.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

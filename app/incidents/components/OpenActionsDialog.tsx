@@ -6,7 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
-import { VENDOR_LABEL, type OpenActionItem } from "../types";
+import { enumLabel, VENDOR_LABEL, type OpenActionItem } from "../types";
 import { formatDate } from "../lib/datetime";
 
 interface Props {
@@ -74,16 +74,20 @@ export function OpenActionsDialog({ open, onOpenChange, actions, loading, error,
                     <span className="truncate text-muted-foreground">{a.incidentTitle}</span>
                   </div>
                   <span className="text-sm">{a.description}</span>
+                  {/* Owed by the vendor, chased by one of us. The vendor is never
+                      the owner — that is exactly how June 21's RCA went unwritten. */}
                   <div className="flex flex-wrap items-center gap-3 text-xs">
-                    <span className="text-muted-foreground">
-                      Chased by: <span className="font-medium text-foreground">{a.ownerLabel}</span>
-                    </span>
                     {a.ownerVendor && a.ownerVendor !== "none" && (
                       <span className="text-muted-foreground">
-                        Owed by:{" "}
-                        <span className="font-medium text-foreground">{VENDOR_LABEL[a.ownerVendor]}</span>
+                        Owed by{" "}
+                        <span className="font-medium text-foreground">
+                          {enumLabel(VENDOR_LABEL, a.ownerVendor)}
+                        </span>
                       </span>
                     )}
+                    <span className="text-muted-foreground">
+                      Chased by <span className="font-medium text-foreground">{a.ownerLabel}</span>
+                    </span>
                     <span className={cn(a.overdue ? "font-semibold text-red-400" : "text-muted-foreground")}>
                       Due {formatDate(a.dueDate)}
                       {a.overdue ? " · overdue" : ""}

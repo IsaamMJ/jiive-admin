@@ -19,6 +19,7 @@ import {
   updateIncident,
 } from "../api";
 import {
+  enumLabel,
   RCA_REQUIRED_SEVERITIES,
   VENDOR_LABEL,
   type CreateActionItemRequest,
@@ -26,6 +27,7 @@ import {
   type IncidentVendor,
 } from "../types";
 import { formatDate, todayLocalDate } from "../lib/datetime";
+import { useIncidentMeta } from "../lib/useIncidentMeta";
 
 interface Props {
   incident: IncidentDetail;
@@ -36,6 +38,11 @@ interface Props {
 const NO_VENDOR = "none";
 
 export function IncidentRcaBlock({ incident, onUpdated }: Props) {
+  const { meta } = useIncidentMeta();
+  // "Who owes the deliverable" is a real vendor, never "none" — that option is the
+  // absence of a vendor, and it is already the default.
+  const vendorOptions = meta.vendors.filter((v) => v.value !== "none");
+
   const [admins, setAdmins] = useState<Array<{ id: string; name: string }>>([]);
   const [adminsError, setAdminsError] = useState(false);
 
@@ -227,16 +234,21 @@ export function IncidentRcaBlock({ incident, onUpdated }: Props) {
                   >
                     <div className="flex min-w-0 flex-col gap-0.5">
                       <span className={cn("break-words text-sm", done && "line-through")}>{a.description}</span>
+                      {/* The vendor OWES it; the admin CHASES it. Never let the
+                          vendor read as the owner — an action item owned only by
+                          Thyrocare is an action item with no owner at all. */}
                       <span className="flex flex-wrap items-center gap-x-3 text-xs">
-                        <span className="text-muted-foreground">
-                          Chased by: <span className="font-medium text-foreground">{a.ownerLabel}</span>
-                        </span>
                         {a.ownerVendor && a.ownerVendor !== "none" && (
                           <span className="text-muted-foreground">
-                            Owed by:{" "}
-                            <span className="font-medium text-foreground">{VENDOR_LABEL[a.ownerVendor]}</span>
+                            Owed by{" "}
+                            <span className="font-medium text-foreground">
+                              {enumLabel(VENDOR_LABEL, a.ownerVendor)}
+                            </span>
                           </span>
                         )}
+                        <span className="text-muted-foreground">
+                          Chased by <span className="font-medium text-foreground">{a.ownerLabel}</span>
+                        </span>
                         <span className={cn(!done && a.overdue ? "font-semibold text-red-400" : "text-muted-foreground")}>
                           Due {formatDate(a.dueDate)}
                           {!done && a.overdue ? " · overdue" : ""}
@@ -295,7 +307,9 @@ export function IncidentRcaBlock({ incident, onUpdated }: Props) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NO_VENDOR}>No vendor owes this</SelectItem>
-                  <SelectItem value="thyrocare">Thyrocare owes it</SelectItem>
+                  {vendorOptions.map((v) => (
+                    <SelectItem key={v.value} value={v.value}>{v.label} owes it</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
 

@@ -1,10 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // The Incident Log backend contract. THE ONLY PLACE these shapes are declared.
 //
-// Source of truth: docs/handoff-backend-incidents-and-calls.md
-// The backend does not exist yet — it is being built to this contract in
-// parallel. When it lands, any field-name drift is a one-line fix HERE, not a
-// hunt through components.
+// Source of truth: docs/handoff-backend-incidents-and-calls.md, plus the
+// additive changes the backend shipped on top of it (all additive — nothing was
+// renamed):
+//   - GET /incidents/meta      — the enum vocabulary, so the frontend's copy of
+//                                it can never silently drift from the server's.
+//   - GET /incidents/rca-owed  — the count behind the "RCA owed (N)" badge.
+//   - Timeline attachments carry METADATA only; the bytes come from
+//     GET /incidents/attachments/:id, which is admin-authenticated.
 //
 // Fields marked [INFERRED] are NOT literally spelled out in the handoff doc.
 // They are the minimum the UI needs and the backend should confirm or correct
@@ -77,8 +81,30 @@ export const VENDOR_LABEL: Record<IncidentVendor, string> = {
 export const INCIDENT_STATUSES = ["OPEN", "RESOLVED", "CLOSED"] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 
+export const STATUS_LABEL: Record<IncidentStatus, string> = {
+  OPEN: "Open",
+  RESOLVED: "Resolved",
+  CLOSED: "Closed",
+};
+
 // Severities that create an RCA obligation on entering RESOLVED.
 export const RCA_REQUIRED_SEVERITIES: readonly IncidentSeverity[] = ["S1", "S2"];
+
+/**
+ * Label for an enum value that may have come from the server's vocabulary rather
+ * than ours. If the backend adds a category we don't know about yet, this renders
+ * "Sample Mislabelled" instead of `undefined` — the UI degrades to readable, never
+ * to blank.
+ */
+export function enumLabel(map: Record<string, string>, value: string): string {
+  return map[value] ?? humanizeEnumValue(value);
+}
+
+/** "phlebo_no_show" → "Phlebo no show". */
+export function humanizeEnumValue(value: string): string {
+  const spaced = value.replace(/[_-]+/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
 
 // ── Shared sub-shapes ────────────────────────────────────────────────────────
 
@@ -151,27 +177,42 @@ export interface TimelineEntry {
 
 /**
  * Round 2 (R1): attachment bytes live in Postgres as `bytea` and are served by a
- * dedicated ADMIN-AUTHENTICATED endpoint — not a public S3 URL. So `url` must be
- * a path RELATIVE to the admin API base, fetched through the axios client so the
- * bearer token is attached. A bare <a href> would not authenticate. [Backend: confirm]
+ * dedicated ADMIN-AUTHENTICATED endpoint — not a public S3 URL.
+ *
+ * What ships here is METADATA ONLY. There is no `url`, and there deliberately
+ * isn't one: the bytes come from `GET /incidents/attachments/:id`, which requires
+ * the bearer token. A plain <img src="…/attachments/:id"> cannot work — the
+ * browser does not attach the Authorization header to an image request, so it
+ * would 401 and render as a broken image. Fetch through the axios client with
+ * `responseType: 'blob'` (see fetchAttachmentBlob in api.ts).
  */
 export interface TimelineAttachment {
   id: string;
-  /** Relative path, e.g. "/incidents/<id>/attachments/<attachmentId>". */
-  url: string;
-  filename: string | null;
-  contentType: string | null;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  createdAt: string; // ISO
 }
 
 /**
- * Round 2 (R1): allowlist only. SVG is deliberately excluded — it is an image to
+ * Round 2 (R1): allowlist only. PNG / JPEG / WebP.
+ *
+ * GIF is not allowed and SVG is not allowed. SVG especially: it is an image to
  * the user and an executable script to the browser, and we would be serving it
  * from our own origin to an authenticated admin (stored XSS → admin compromise).
- * The server re-checks by sniffing the bytes; this client check just fails fast.
+ *
+ * The SERVER is the real gate — it sniffs the magic bytes and ignores both the
+ * filename and the client-declared Content-Type, because both are attacker
+ * controlled. The client-side check below is a UX courtesy so the operator is
+ * told immediately instead of after a failed upload. It is NOT a security
+ * control and must never be described as one.
  */
 export const ALLOWED_ATTACHMENT_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 
-/** ~5 MB per image, enforced server-side too. */
+/** The `accept` attribute for the file input. Same list as above. */
+export const ATTACHMENT_ACCEPT = ALLOWED_ATTACHMENT_TYPES.join(",");
+
+/** ~5 MB per image. Enforced server-side too — this is the fail-fast copy. */
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 /**
@@ -200,7 +241,14 @@ export interface IncidentActionItem {
 
 // ── Incident ─────────────────────────────────────────────────────────────────
 
-/** List-row shape. */
+/**
+ * List-row shape — the UI's flat view of an incident.
+ *
+ * ⚠️ This is NOT the wire shape. The server nests the incident's own fields under
+ * `.incident` and hangs customers / bookings / timeline / paymentBatchIds off the
+ * envelope as SIBLINGS. api.ts flattens that on the way in, so components never
+ * see the envelope. See WireIncident / WireIncidentEnvelope below.
+ */
 export interface IncidentSummary {
   id: string;
   /** Human-readable, e.g. "INC-2026-014". Operators quote this to the vendor. */
@@ -209,6 +257,8 @@ export interface IncidentSummary {
   severity: IncidentSeverity;
   /** Shadow field, set once. Drift from `severity` tells us if we under-call. */
   originalSeverity: IncidentSeverity;
+  /** Server-computed: severity was changed after filing. */
+  severityReassigned: boolean;
   status: IncidentStatus;
   category: IncidentCategory;
   vendor: IncidentVendor;
@@ -216,17 +266,25 @@ export interface IncidentSummary {
   reportedAt: string; // ISO — auto. The gap from occurredAt is our detection latency.
   resolvedAt: string | null;
   closedAt: string | null;
+  /** RESPONSE field name. The CREATE REQUEST calls the same thing `orderIds`. */
   affectedOrderIds: string[];
   filedBy: AdminRef | null; // null when filed via the legacy static ADMIN_TOKEN path
   owner: AdminRef | null;
-  /** Customer name, for the list row. [INFERRED] */
   customerName: string | null;
-  /** RESOLVED + S1/S2 + RCA not yet written. Powers the "RCA owed" badge. [INFERRED] */
+  /** Server-computed: this severity owes an RCA. */
+  rcaRequired: boolean;
+  /** Server-computed: the RCA obligation exists and its due date has passed. */
+  rcaOverdue: boolean;
+  rcaDueAt: string | null;
+  /** Server-computed gap between occurredAt and reportedAt — our detection latency. */
+  detectionLatencyMinutes: number | null;
+  /**
+   * DERIVED IN api.ts, not sent by the server: an RCA is required, the incident
+   * isn't closed, and no contributing factor has been written yet. The top-strip
+   * count comes from GET /incidents/rca-owed (which owns the real definition);
+   * this is only the per-row badge.
+   */
   rcaOwed: boolean;
-  /** Open (not-done) action items on this incident. [INFERRED] */
-  openActionCount: number;
-  /** Open action items past their due date. [INFERRED] */
-  overdueActionCount: number;
 }
 
 /** Detail shape — everything on the summary plus the enrichment and the RCA. */
@@ -244,15 +302,77 @@ export interface IncidentDetail extends IncidentSummary {
   contributingFactors: string[];
   actionItems: IncidentActionItem[];
   timeline: TimelineEntry[];
+  /** Assembled in api.ts from the envelope's customers/bookings/paymentBatchIds. */
   context: IncidentContext;
+}
+
+// ── Wire shapes (what the server actually sends) ──────────────────────────────
+//
+// Kept separate from the UI shapes above ON PURPOSE. The server's envelope is
+// nested and its create request is named asymmetrically from its responses; both
+// facts are absorbed by the normalisers in api.ts so that exactly one file has to
+// know about them.
+
+/** The incident's own fields — everything under `.incident`. */
+export interface WireIncident {
+  id: string;
+  ref: string;
+  title: string;
+  severity: IncidentSeverity;
+  originalSeverity?: IncidentSeverity;
+  severityReassigned?: boolean;
+  status: IncidentStatus;
+  category: IncidentCategory;
+  vendor: IncidentVendor;
+  occurredAt: string;
+  reportedAt: string;
+  resolvedAt?: string | null;
+  closedAt?: string | null;
+  affectedOrderIds?: string[];
+  filedBy?: AdminRef | null;
+  owner?: AdminRef | null;
+  whatHappened?: string;
+  whatWentWell?: string | null;
+  slaBreached?: boolean;
+  slaDetail?: string | null;
+  vendorCommitment?: string | null;
+  tags?: string[];
+  contributingFactors?: string[];
+  actionItems?: IncidentActionItem[];
+  rcaRequired?: boolean;
+  rcaOverdue?: boolean;
+  rcaDueAt?: string | null;
+  detectionLatencyMinutes?: number | null;
+  customerName?: string | null;
+  /** Prisma relation counts on list rows. */
+  _count?: Record<string, number>;
+}
+
+/**
+ * The create/detail envelope. The incident is under `.incident`; the resolved
+ * context and the timeline are SIBLINGS of it, not inside it.
+ */
+export interface WireIncidentEnvelope {
+  incident: WireIncident;
+  customers?: IncidentCustomer[];
+  bookings?: IncidentBooking[];
+  paymentBatchIds?: string[];
+  timeline?: TimelineEntry[];
+  actionItems?: IncidentActionItem[];
+  address?: IncidentAddress | null;
 }
 
 // ── Request payloads ─────────────────────────────────────────────────────────
 
 /**
- * The 60-second file. EXACTLY these fields. `filedBy` / `reportedAt` are stamped
- * server-side from the bearer token — the client has no access to the admin's ID
- * and must never send them.
+ * The 60-second file.
+ *
+ * ⚠️ The order IDs are called `orderIds` HERE, in the request — even though every
+ * response calls the same thing `affectedOrderIds`. That asymmetry is the live
+ * contract, verified against dev. Do not "tidy" either name to match the other.
+ *
+ * `filedBy` / `reportedAt` are stamped server-side from the bearer token — the
+ * client has no access to the admin's ID and must never send them.
  */
 export interface FileIncidentRequest {
   title: string;
@@ -260,10 +380,52 @@ export interface FileIncidentRequest {
   category: IncidentCategory;
   occurredAt: string; // ISO — back-datable
   whatHappened: string;
-  affectedOrderIds: string[];
-  /** Optional even at file time — defaults server-side. [INFERRED] */
-  vendor?: IncidentVendor;
+  orderIds: string[];
+  /**
+   * ALWAYS SENT, never omitted. The server defaults an absent vendor to "none",
+   * and an incident filed as "none" is invisible to the Thyrocare scorecard — the
+   * single artefact this whole system exists to produce. INC-2026-001 (June 21,
+   * the motivating incident) is already on dev with vendor:"none" for exactly this
+   * reason. The file form pre-selects it from the category so it costs no typing.
+   */
+  vendor: IncidentVendor;
 }
+
+/**
+ * Which vendor a category implies. Pre-selects the vendor control in the file
+ * form so the operator never has to think about it — they can still override it
+ * in one tap, and the override is what gets sent.
+ *
+ * Categories that map to "none" are genuinely ambiguous (a dispatch failure or a
+ * wrong panel could be either side's fault), so they stay user-selectable rather
+ * than guessing and being confidently wrong.
+ */
+export const VENDOR_BY_CATEGORY: Record<IncidentCategory, IncidentVendor> = {
+  phlebo_no_show: "thyrocare",
+  phlebo_late: "thyrocare",
+  sample_issue: "thyrocare",
+  result_delayed: "thyrocare",
+  result_wrong: "thyrocare",
+  booking_error: "internal",
+  app_or_backend: "internal",
+  billing_refund: "internal",
+  address_or_dispatch: "none",
+  wrong_test_or_panel: "none",
+  other: "none",
+};
+
+/** The vendor a category implies, or "none" for a category we don't know. */
+export function suggestVendor(category: IncidentCategory | null): IncidentVendor {
+  if (!category) return "none";
+  return (VENDOR_BY_CATEGORY as Record<string, IncidentVendor>)[category] ?? "none";
+}
+
+/** Short labels for the one-tap vendor control. "Who does this land on?" */
+export const VENDOR_SHORT_LABEL: Record<IncidentVendor, string> = {
+  thyrocare: "Thyrocare",
+  internal: "Us",
+  none: "Neither",
+};
 
 /** Everything here is optional — enrichment, done later from a laptop. */
 export interface UpdateIncidentRequest {
@@ -309,20 +471,29 @@ export interface UpdateActionItemRequest {
 
 // ── Query params ─────────────────────────────────────────────────────────────
 
+/**
+ * VERIFIED against the live dev backend on 2026-07-13 — every key below returned
+ * 200; anything absent returned 400. The list schema is STRICT: an unrecognised
+ * key is a hard 400, not an ignored param, so a hopeful guess doesn't degrade —
+ * it takes the whole list down. (An earlier version of this file guessed
+ * `excludeClosed`, `occurredFrom`, `occurredTo` and `rcaOwed`; all four 400'd and
+ * the incidents list rendered permanently empty. Do not add a key here without
+ * curling it first.)
+ *
+ * Note what is NOT here: there is no way to ask for "everything except CLOSED".
+ * `status` takes a single value only. See the comment in page.tsx.
+ */
 export interface IncidentListParams {
   severity?: IncidentSeverity;
   category?: IncidentCategory;
   vendor?: IncidentVendor;
+  /** Single value only — the backend rejects a comma-separated list. */
   status?: IncidentStatus;
-  /** Default view is "everything not CLOSED" — this is how we ask for it. [INFERRED] */
-  excludeClosed?: boolean;
-  /** ISO dates, filtering on occurredAt. */
-  occurredFrom?: string;
-  occurredTo?: string;
-  customerId?: string;
+  /** ISO dates (YYYY-MM-DD), filtering on occurredAt. */
+  from?: string;
+  to?: string;
+  /** Thyrocare order id, e.g. "VL8E1FF6". (`customerId` is NOT supported — 400.) */
   orderId?: string;
-  /** Only incidents whose RCA is still owed. Powers the "RCA owed" badge. [INFERRED] */
-  rcaOwed?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -357,6 +528,51 @@ export interface IncidentStatsBucket {
 
 export interface IncidentStatsResponse {
   buckets: IncidentStatsBucket[];
+}
+
+// ── Meta (GET /incidents/meta) ───────────────────────────────────────────────
+//
+// The server owns the vocabulary. We fetch it and drive the category chips,
+// severity tiles and status/vendor filters from it, so that adding a category
+// backend-side does not require a frontend release and — more importantly — so
+// the two lists can never silently disagree about what a category *is*.
+//
+// The local constants above remain the compile-time source of truth (house style
+// per the handoff: a TS enum, never raw strings) AND the offline fallback. If
+// /incidents/meta fails, the file form must still work — a broken meta call must
+// not take incident filing down with it.
+
+export interface MetaOption<T extends string = string> {
+  value: T;
+  label: string;
+}
+
+export interface IncidentMeta {
+  categories: MetaOption<IncidentCategory>[];
+  severities: MetaOption<IncidentSeverity>[];
+  statuses: MetaOption<IncidentStatus>[];
+  vendors: MetaOption<IncidentVendor>[];
+}
+
+/** Used verbatim when /incidents/meta is unreachable. */
+export const FALLBACK_META: IncidentMeta = {
+  categories: INCIDENT_CATEGORIES.map((value) => ({ value, label: CATEGORY_LABEL[value] })),
+  severities: INCIDENT_SEVERITIES.map((value) => ({ value, label: SEVERITY_LABEL[value] })),
+  statuses: INCIDENT_STATUSES.map((value) => ({ value, label: STATUS_LABEL[value] })),
+  vendors: INCIDENT_VENDORS.map((value) => ({ value, label: VENDOR_LABEL[value] })),
+};
+
+// ── RCA owed (GET /incidents/rca-owed) ───────────────────────────────────────
+
+/**
+ * Powers the "RCA owed (N)" badge. Previously the list page derived this by
+ * re-querying /incidents with `rcaOwed=true&limit=1` and reading `total` — which
+ * meant the badge's definition of "owed" lived in the frontend's filter params.
+ * It now comes from the endpoint that owns the definition.
+ */
+export interface RcaOwedResponse {
+  count: number;
+  incidents: IncidentSummary[];
 }
 
 // ── Suspected incidents (client-derived — NOT a backend shape) ────────────────

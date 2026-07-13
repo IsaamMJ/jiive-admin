@@ -4,13 +4,20 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
   CATEGORY_LABEL,
+  enumLabel,
   SEVERITY_LABEL,
+  STATUS_LABEL,
   VENDOR_LABEL,
   type IncidentCategory,
   type IncidentSeverity,
   type IncidentStatus,
   type IncidentVendor,
 } from "../types";
+
+// The vocabulary is now the server's (GET /incidents/meta), so a value we have no
+// colour for is possible. Fall back to a neutral chip and a humanised label rather
+// than rendering an unstyled badge reading "undefined".
+const NEUTRAL_CLASS = "bg-muted text-muted-foreground border-border";
 
 const SEVERITY_CLASS: Record<IncidentSeverity, string> = {
   S1: "bg-red-500/20 text-red-400 border-red-500/30",
@@ -21,8 +28,11 @@ const SEVERITY_CLASS: Record<IncidentSeverity, string> = {
 
 export function SeverityBadge({ severity, className }: { severity: IncidentSeverity; className?: string }) {
   return (
-    <Badge variant="outline" className={cn("font-semibold tabular-nums", SEVERITY_CLASS[severity], className)}>
-      {severity} · {SEVERITY_LABEL[severity]}
+    <Badge
+      variant="outline"
+      className={cn("font-semibold tabular-nums", SEVERITY_CLASS[severity] ?? NEUTRAL_CLASS, className)}
+    >
+      {severity} · {enumLabel(SEVERITY_LABEL, severity)}
     </Badge>
   );
 }
@@ -35,16 +45,10 @@ const STATUS_CLASS: Record<IncidentStatus, string> = {
   CLOSED: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
 };
 
-const STATUS_LABEL: Record<IncidentStatus, string> = {
-  OPEN: "Open",
-  RESOLVED: "Resolved",
-  CLOSED: "Closed",
-};
-
 export function IncidentStatusBadge({ status, className }: { status: IncidentStatus; className?: string }) {
   return (
-    <Badge variant="outline" className={cn("font-semibold", STATUS_CLASS[status], className)}>
-      {STATUS_LABEL[status]}
+    <Badge variant="outline" className={cn("font-semibold", STATUS_CLASS[status] ?? NEUTRAL_CLASS, className)}>
+      {enumLabel(STATUS_LABEL, status)}
     </Badge>
   );
 }
@@ -52,7 +56,7 @@ export function IncidentStatusBadge({ status, className }: { status: IncidentSta
 export function CategoryBadge({ category }: { category: IncidentCategory }) {
   return (
     <Badge variant="outline" className="text-xs font-normal">
-      {CATEGORY_LABEL[category]}
+      {enumLabel(CATEGORY_LABEL, category)}
     </Badge>
   );
 }
@@ -60,7 +64,7 @@ export function CategoryBadge({ category }: { category: IncidentCategory }) {
 export function VendorBadge({ vendor }: { vendor: IncidentVendor }) {
   return (
     <Badge variant="outline" className="text-xs font-normal text-muted-foreground">
-      {VENDOR_LABEL[vendor]}
+      {enumLabel(VENDOR_LABEL, vendor)}
     </Badge>
   );
 }
