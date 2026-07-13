@@ -33,7 +33,22 @@
       "Bash(aws ecs list-services *)",
       "Bash(aws ecs *)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('Status:', d['service']['status']\\); print\\('Desired:', d['service']['desiredCount']\\)\")",
-      "Bash(npx shadcn@latest add sonner --yes)"
+      "Bash(npx shadcn@latest add sonner --yes)",
+      "Bash(git config *)",
+      "Bash(git commit --allow-empty -m 'Trigger deploy as isaamm-io *)",
+      "Bash(git commit --allow-empty -m 'Trigger deploy as isaamm@jiive.ai *)",
+      "mcp__reef__reef_list_groups",
+      "mcp__reef__reef_create_group",
+      "mcp__reef__reef_assign_group",
+      "Bash(grep -E \"^\\\\S+\\\\.\\(tsx|ts\\)$|error\")",
+      "Bash(npx tsc *)",
+      "Bash(grep -E \"\\(credits|audit-log|users\\\\\\\\\\\\\\\\\\\\\\\\[id\\\\\\\\\\\\\\\\\\\\\\\\]\\)\")",
+      "Bash(grep -A 6 \"credits\\\\\\\\\\\\\\\\\\\\\\\\\\(packs\\\\\\\\|action-costs\\\\\\\\\\)\")",
+      "Read(//tmp/**)",
+      "Bash(git commit *)",
+      "Bash(New-Item *)",
+      "Bash(git rev-list *)",
+      "Bash(bash)"
     ]
   }
 }
