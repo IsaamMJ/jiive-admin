@@ -202,6 +202,12 @@ deliberately built S3-free). Volume is trivial.
 - Cap size (~5 MB/image, a few per update). "Volume is trivial" is only true if it's *enforced*.
 - **Never `SELECT` the blob column in list/detail queries** — fetch bytes only from the dedicated endpoint.
 
+**Why this is the most important line in the feature, not a nitpick:** we'd be serving an admin-uploaded
+file back from our own trusted origin, to an authenticated admin session. An accepted SVG is **stored XSS →
+full admin compromise via an image upload.** Both the filename and the client-declared `Content-Type` are
+attacker-controlled, so neither may be trusted — sniff the bytes.
+**Acceptance test:** upload an SVG renamed to `.png` and declared as `image/png`. It must be **rejected**.
+
 ### R2. `ownerAdminId` stays required; add optional `ownerVendor`
 Our spec contradicted itself (required admin owner vs. "the owner may be the vendor" — Thyrocare has no
 `AdminUser` row). **The backend's fix is sharper than our spec and we're adopting their reasoning verbatim:**
@@ -229,6 +235,10 @@ violation. Twelve months after launch, in the worst possible way.
 - **Key the opt-out on phone number, not just `userId`** (frontend addition). If a person re-registers with a
   new user row on the same number, a `userId`-keyed exclusion silently lapses and we phone someone who told
   us not to.
+- ⚠️ **Phone normalisation must be identical on write and on check, or the exclusion fails open** — i.e. it
+  looks like it works right up until it calls someone who opted out. Normalise once, in one shared function,
+  used by both paths. **Do not reuse the existing +91-assuming normaliser** (already filed as a defect).
+  Store the normalised form and match on it; never compare raw user input to a stored normalised value.
 
 ---
 
