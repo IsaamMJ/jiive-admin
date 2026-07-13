@@ -185,6 +185,53 @@ token, never sent by the client).
 - `GET /users/:id` — **please add `incidents[]` and `callLogs[]`** to the existing response. That page
   already renders 6 nested collections from this one call; two more means the new tabs need near-zero plumbing.
 
+## Round 2 — resolutions from backend review (2026-07-13). These supersede anything above.
+
+The backend team raised four gaps. **All four accepted.** Two were genuine contradictions in our spec.
+
+### R1. Attachments live in Postgres as `bytea`, served via an admin-auth'd endpoint
+No S3 client exists, and RAG's ECS-local disk dies on redeploy — **evidence for a vendor dispute cannot
+evaporate on a deploy.** Zero new infra/IAM/env vars, and there's house precedent (results was
+deliberately built S3-free). Volume is trivial.
+
+**Conditions (frontend asks):**
+- **Reject SVG.** Allowlist `image/png`, `image/jpeg`, `image/webp`, **sniffed from the bytes** — never
+  trusted from the filename or the client-supplied `Content-Type`. An SVG is an image to the user and an
+  executable script to the browser; we'd be serving admin-uploaded XSS from our own origin.
+- Serve with `X-Content-Type-Options: nosniff`. Never render inline as HTML.
+- Cap size (~5 MB/image, a few per update). "Volume is trivial" is only true if it's *enforced*.
+- **Never `SELECT` the blob column in list/detail queries** — fetch bytes only from the dedicated endpoint.
+
+### R2. `ownerAdminId` stays required; add optional `ownerVendor`
+Our spec contradicted itself (required admin owner vs. "the owner may be the vendor" — Thyrocare has no
+`AdminUser` row). **The backend's fix is sharper than our spec and we're adopting their reasoning verbatim:**
+
+> June 21 failed precisely BECAUSE the RCA's only owner was the vendor and nobody internal owned chasing it.
+
+An action item owned by Thyrocare is an action item with **no owner**. So: `ownerAdminId` (required) is the
+internal person who chases it; `ownerVendor` (optional) records who owes the deliverable. Frontend POST body unchanged.
+
+### R3. Call-queue exclusion rules (our spec contradicted itself)
+- **Terminal** — removes the booking from the queue permanently: `connected`, `refused`, `wrong_number`, `do_not_contact`.
+- **Non-terminal** — stays queued up to **3 attempts**: `no_answer`, `unreachable`.
+- **`callback`** — does not burn an attempt; re-enqueues at `callbackAt`.
+
+### R4. Retention must not delete the opt-out (the important one)
+Taken literally, our "12-month deletion of call notes" would **delete the row recording `do_not_contact`,
+resurrecting an opted-out customer back into the call queue** — our own retention job causing a DPDP consent
+violation. Twelve months after launch, in the worst possible way.
+
+**Fix:**
+- At 12 months, **scrub the health-adjacent free text** (`notes`, `verbatim`) but **keep the structural row**
+  (disposition, csat, tags, timestamps — aggregate value, not health-adjacent).
+- **`do_not_contact` gets its own permanent opt-out table.** The exclusion must never depend on the retention
+  job, on the call-log row surviving, or on anyone remembering.
+- **Key the opt-out on phone number, not just `userId`** (frontend addition). If a person re-registers with a
+  new user row on the same number, a `userId`-keyed exclusion silently lapses and we phone someone who told
+  us not to.
+
+---
+
 ## House conventions to follow (verified on `origin/dev` — no discovery needed)
 
 - **No Prisma enums for lifecycle status.** House style is a plain `String` column + a TypeScript enum as
