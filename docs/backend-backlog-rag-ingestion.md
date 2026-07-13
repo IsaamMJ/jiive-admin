@@ -1,103 +1,80 @@
-# Handoff → jiive-backend — RAG ingestion: make it prod-grade (one pass)
+# Handoff → jiive-backend — RAG ingestion
 
-**Date:** 2026-07-01
+**Date:** 2026-07-13 (supersedes the 2026-07-01 handoff)
 **From:** jiive-admin (frontend / head) — report only, no backend changes from us.
-**Goal:** one consolidated pass so a non-technical owner (Juveira) can upload real medical PDFs and
-publish them into the KB reliably. Batched deliberately to avoid back-and-forth. Priority order below.
-
-**Frontend status:** the `app/rag` UI (upload / review / forced side-by-side / gates / bulk / versioning)
-is built, adversarially reviewed, and prod-grade. It surfaces backend errors faithfully. The items
-below are all **backend-side**.
+**Goal:** a non-technical owner (Juveira) can put real medical content into the KB and publish it,
+without silently getting a worse result depending on which button she picked.
 
 ---
 
-## 🔴 P0 — BLOCKER: "Publish failed: Bad Request" on approve
+## ✅ Closed since the last handoff — thank you, don't rebuild
 
-**Nothing can be published until this is fixed.** Approving a valid, cleanly-parsed doc (6-page
-dyslipidaemia editorial, gates passed) fails on **dev** with `Publish failed: Bad Request`.
+All three items from 2026-07-01 shipped and are **live on prod** (ECS rev 25, no migration):
 
-- **Where:** publish step only (parse + gates succeed). `rag-document.service.approveV2` →
-  `rag.upsertDocumentVersion` → `embedBatch()` (OpenAI embeddings) → `qdrant.upsert()`. One threw
-  "Bad Request"; caught + re-thrown as `ConflictException("Publish failed: <reason>")`; doc rolled
-  back to `pending_review` (no corruption).
-- **You have the exact cause in logs:** `RAG approve(v2): document <id> publish error — <reason>`.
-  `<reason>` tells you OpenAI vs Qdrant + the message.
-- **Prime suspects (dev-specific — is prod's publish actually exercised end-to-end yet?):**
-  - **Qdrant collection dimension/config mismatch** — ties to the wrong `EMBEDDING_MODEL` env
-    (`env.ts:90` still `BAAI/bge-large-en-v1.5`; real model is `text-embedding-3-small` @ 1536-dim,
-    `embedding.service.ts:14`). If the dev collection was created for a different dim → upsert 400.
-  - **Empty/whitespace chunk** reaching the embeddings API → OpenAI 400 "input must not be empty".
-- **Definition of done:** a valid PDF approves → `ready`, chunks land in Qdrant, and it's retrievable
-  in the playground. Confirm this works on **both dev and prod** (nobody has published end-to-end on
-  prod yet — please verify, don't assume).
+| Item | Fix | Commit |
+|---|---|---|
+| **P0** — "Publish failed: Bad Request" on approve | Self-heal Qdrant payload indexes so publish stops 400ing | `cce5f34` |
+| **P1** — PDF ligature / font-encoding garbling (`arƟcle` → `article`) | Deterministic normalization before chunk/embed | `e29ca30` |
+| **P2** — text / paste ingestion | `POST /documents/text` (+ too-few-words rejected up front) | `db678e7`, `46a6acc` |
+
+**Frontend caught up:** the admin KB UI now has a **paste-text** box wired to `POST /documents/text`,
+mirroring your validation (≥200 chars, ≥50 words, ≤500k chars, title required) client-side and
+surfacing your 400 messages verbatim.
 
 ---
 
-## 🟠 P1 — PDF ligature / font-encoding normalization (quality)
+## 🔴 P1b (revised) — Single upload must go through Docling, and be async
 
-Many medical/journal PDFs have broken font→Unicode maps, so extraction yields garbled glyphs for
-common letter-combos → the KB would store "arƟcle" for "article", corrupting retrieval and citations.
-The human review gate catches these (owner rejects), but that makes every affected PDF un-ingestable.
+**This is now the only open ingestion item, and it's more serious than we originally filed it.**
 
-**Real evidence — `Med_sample.pdf` (7-page editorial), 244 bad chars (1.4%):**
+We filed this on 2026-07-01 as a timeout bug. It is really a **silent quality trap**:
 
-| Codepoint | Glyph | Should be | Count |
-|---|---|---|---|
-| U+019F | Ɵ | `ti` | 172 |
-| U+01A9 | Ʃ | `tt` | 14 |
-| U+FB01 | fi-lig | `fi` | 23 |
-| U+FB00 | ff-lig | `ff` | 13 |
-| U+FB03 | ffi-lig | `ffi` | 4 |
-| U+FB02 | fl-lig | `fl` | 1 |
-| U+A78F | ꞏ | `·` | 3 |
+| Endpoint | Parser | Table fidelity |
+|---|---|---|
+| `POST /documents` (single upload) | `pdf-parse` (in-process JS text extractor) — `rag-document.service.ts:234` | ✗ poor — this is the parser Docling was adopted to replace |
+| `POST /documents/bulk` | **Docling** (`runParseQueue`, `rag-document.service.ts:708`) | ✓ layout-aware, faithful tables |
 
-**Outcome:** a deterministic **glyph→letter normalization pass after parse, before chunk/embed**
-(Unicode ligatures FB00–FB06 are unambiguous; add the font-specific ones above). Not LLM cleanup —
-pure substitution, keeps content verbatim.
-**Definition of done:** re-ingesting `Med_sample.pdf` produces clean words (no Ɵ/Ʃ/ligatures) in
-`parsedText` and chunks.
+So the most obvious action for a non-technical owner — drag **one** PDF into Single upload — quietly
+gives her the **worse** parser: the one that mangles the reference-range tables Docling exists to get
+right. "Bulk" reads like the advanced/power option, but it's the only one that parses properly. The
+quality difference is invisible in the UI and in the API response.
 
----
+The timeout bug is the same bug's other face: `POST /documents` is synchronous through parse
+(`await pdfParse(file.buffer)` inline, `rag-document.service.ts:234`), so a large PDF (RSSDI, 236pp)
+dies at the gateway (~30–60s) with no useful reason.
 
-## 🟡 P2 — Text / paste ingestion (the cleanest input path)
+**Outcome:** route `POST /documents` through the **same Docling + background-queue path bulk already
+uses** — return immediately with `{ documentId, status: 'processing' }` and parse in the background;
+the client already polls to `pending_review`/`failed`. One change removes both the quality trap and
+the gateway timeout, and the async machinery already exists — bulk proves it.
 
-Ingestion is **PDF-only** today. For a non-technical owner, pasting clean text is the
-highest-quality, zero-parse-risk input — and it makes P1 irrelevant for typed content.
+**Definition of done:**
+- The same PDF uploaded via single vs bulk produces the **same** parsed text and the same tables.
+- RSSDI (236pp / 2.3MB) via single upload returns immediately and reaches `pending_review`.
 
-**Outcome:** accept a **pasted text / markdown** source (e.g. `POST /documents` variant taking
-`{ text, title }`) → same downstream (chunk → embed → review → approve). Frontend adds a "paste
-content" box once the endpoint exists. Keep source verbatim.
+**Frontend follow-on (ours, once this lands):** we delete the "use Bulk upload for big files" nudge and
+the 3-min client timeout — both are workarounds for this bug, and we'd rather shrink the UI than keep them.
 
 ---
 
-## 🟠 P1b — Single upload should be ASYNC (large PDFs time out at the gateway)
+## 🟡 Small — expose `parser` on the API
 
-**Symptom:** uploading a large PDF (e.g. RSSDI, 236 pages / 2.3 MB) via **single upload** spins
-forever, then fails. `POST /documents` is **synchronous through parse** — it doesn't respond until
-Docling finishes the whole document (minutes for a big file), so the request **times out at the
-gateway (~30–60s)** → the operator sees "Upload failed" with no useful reason.
+The DB has a `parser` column (`schema.prisma:681`; values `'text' | 'pdf-parse' | 'docling'`), but it's
+**not in the `select`** for either `list()` or `getDetail()` (`rag-document.service.ts:420`, `:440`), so
+it never reaches the wire.
 
-- **Bulk upload already works** (it returns a `batchId` immediately and parses in the background) —
-  so the async pattern already exists; single upload just doesn't use it.
-- **Outcome:** make `POST /documents` return **immediately** with `{ documentId, status: 'processing' }`
-  and parse in the background (same as bulk), so the row appears right away and the client polls it to
-  `pending_review`/`failed`. This eliminates the gateway-timeout entirely for any file size.
-- Frontend has been hardened (3-min client timeout + "large PDFs take a while" messaging + a nudge to
-  use Bulk upload for big files), but the durable fix is async single-upload.
-
-## ✅ Already done (confirm, don't rebuild)
-- **Gate enforcement** (`tables_not_reviewed` / `conflicts_not_acknowledged`, 409) — implemented
-  server-side; frontend sends `tablesReviewed` + `conflictsAcknowledged`. Just confirm it still holds
-  after the P0 fix.
-- **Docling parser + clinical-safety review** — live. One thing to **validate on real samples**:
-  run the team's actual table-heavy medical PDFs (e.g. DGI_2024, RSSDI) through Docling and eyeball
-  that reference-range **tables** come out faithful — this is the whole point of the layout parser.
+**Outcome:** include `parser` in both responses. It's a one-line addition and it lets the admin UI show
+how a document was ingested — which is exactly the signal a reviewer needs while the parser split above
+still exists. Low priority once P1b lands, but useful regardless for traceability.
 
 ---
 
-## Suggested order
-1. **P0 publish blocker** (check the dev log line — likely the Qdrant dim / EMBEDDING_MODEL env) —
-   confirm publish works on dev AND prod.
-2. **P1 ligature normalization** — cheap, high-value, recurs on every journal PDF.
-3. **Validate Docling table fidelity** on real samples.
-4. **P2 paste-text** — when you want the cleanest owner input path.
+## Still unvalidated (not a code item)
+
+- **Docling table fidelity on real samples** — nobody has run the team's actual table-heavy medical PDFs
+  (DGI_2024, RSSDI) through Docling and eyeballed whether reference-range tables come out faithful.
+  This is the whole point of the layout parser and it's still assumed, not verified. jiive-admin is
+  running this now against dev.
+- **First real publish on prod** — prod Qdrant is intentionally empty (decision: Juveira populates it
+  fresh via the tool, no seeding of the old diabetes-only chunks). So the publish path, though fixed,
+  has not yet been exercised by a human on prod with real content.

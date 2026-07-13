@@ -107,3 +107,11 @@ export interface VersionInfo {
   documentCount: number;
   totalChunks: number;
 }
+
+// ── Paste text ───────────────────────────────────────────────────────────────
+
+export interface PasteTextResponse {
+  documentId: string;
+  title: string;
+  status: "pending_review";
+}

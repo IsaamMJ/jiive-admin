@@ -27,6 +27,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import api from "@/lib/api";
+import { InfoTip } from "@/app/playground/InfoTip";
 import type {
   RagDocument,
   RagOverview,
@@ -37,12 +38,19 @@ import type {
   BatchResponse,
   VersionInfo,
   ApproveResponse,
+  PasteTextResponse,
 } from "./types";
 
 // Poll every 3s while any doc is queued/processing (safety net — uploads are mostly synchronous).
 const POLL_MS = 3_000;
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
 const MAX_BULK_FILES = 50;
+
+// Client-side approximations of the server's paste-text gates (server validates
+// against its own cleaned text — these just stop obvious mistakes early).
+const MAX_PASTE_CHARS = 500_000;
+const MIN_PASTE_CHARS = 200;
+const MIN_PASTE_WORDS = 50;
 
 function isInProgress(status: DocStatus): boolean {
   return status === "queued" || status === "processing";
@@ -112,6 +120,12 @@ export default function KnowledgeBasePage() {
 
   // Drag-and-drop (single upload drop zone)
   const [dragOver, setDragOver] = useState(false);
+
+  // Paste-text upload state
+  const [pasteTitle, setPasteTitle] = useState("");
+  const [pasteText, setPasteText] = useState("");
+  const [pasting, setPasting] = useState(false);
+  const pastingRef = useRef(false);
 
   // Bulk upload state (v2)
   const bulkInputRef = useRef<HTMLInputElement>(null);
@@ -330,6 +344,35 @@ export default function KnowledgeBasePage() {
     handleFileSelect(file);
   }
 
+  // ── Paste text ─────────────────────────────────────────────────────────────
+
+  async function handlePasteText() {
+    if (pasteDisabledReason) return;
+    if (pastingRef.current) return;
+    pastingRef.current = true;
+    setPasting(true);
+    try {
+      const r = await api.post<PasteTextResponse>("/rag/documents/text", {
+        text: pasteText,
+        title: pasteTitle.trim(),
+      });
+      toast.success(`"${r.data.title}" saved — pending review.`);
+      setPasteTitle("");
+      setPasteText("");
+      // Synchronous — the doc is already pending_review, no queued/processing
+      // state to poll for.
+      fetchDocs();
+      fetchOverview();
+      fetchVersion();
+    } catch (err: unknown) {
+      const data = (err as { response?: { data?: { message?: string } } })?.response?.data;
+      toast.error(data?.message ?? "Could not save the pasted text — check your connection and try again.");
+    } finally {
+      pastingRef.current = false;
+      setPasting(false);
+    }
+  }
+
   // ── Bulk upload (v2) ──────────────────────────────────────────────────────
 
   function handleBulkFileSelect(files: FileList | null) {
@@ -497,6 +540,23 @@ export default function KnowledgeBasePage() {
   // F1: defensive derived vars — null API fields must not white-screen the dialog
   const conflicts = reviewDoc?.numericConflicts ?? [];
   const tables = reviewDoc?.tables ?? [];
+
+  // Paste-text local validation (approximation of server gates — see MAX/MIN_PASTE_* above).
+  const pasteTextTrimmed = pasteText.trim();
+  const pasteCharCount = pasteTextTrimmed.length;
+  const pasteWordCount = pasteTextTrimmed === "" ? 0 : pasteTextTrimmed.split(/\s+/).filter(Boolean).length;
+  const pasteDisabledReason: string | null =
+    pasteTitle.trim() === ""
+      ? "Add a title first."
+      : pasteCharCount === 0
+      ? "Paste some text first."
+      : pasteCharCount > MAX_PASTE_CHARS
+      ? `Too long — trim to under ${MAX_PASTE_CHARS.toLocaleString()} characters (currently ${pasteCharCount.toLocaleString()}).`
+      : pasteCharCount < MIN_PASTE_CHARS
+      ? `Needs at least ${MIN_PASTE_CHARS} characters (currently ${pasteCharCount}).`
+      : pasteWordCount < MIN_PASTE_WORDS
+      ? `Needs at least ${MIN_PASTE_WORDS} words — about a full paragraph (currently ${pasteWordCount}).`
+      : null;
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -675,6 +735,70 @@ export default function KnowledgeBasePage() {
               )}
 
               <p className="text-xs text-muted-foreground">PDF only · up to {MAX_BULK_FILES} files per batch</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Paste text */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-1.5">
+              Paste text
+              <InfoTip label="Best option for typed or copied text — there's no PDF parsing step, so nothing can get garbled. The text goes into the knowledge base exactly as written." />
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-3">
+              <Input
+                aria-label="Document title"
+                placeholder="Document title"
+                value={pasteTitle}
+                onChange={(e) => setPasteTitle(e.target.value)}
+                disabled={pasting}
+              />
+              <textarea
+                aria-label="Document content"
+                placeholder="Paste or type the content here…"
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                disabled={pasting}
+                rows={10}
+                className="w-full min-w-0 resize-y rounded-lg border border-input bg-transparent px-2.5 py-2 text-sm leading-relaxed transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 dark:bg-input/30 dark:disabled:bg-input/80"
+              />
+              <div className="flex items-center justify-between gap-3">
+                <span
+                  className={`text-xs ${
+                    pasteCharCount > 0 && (pasteCharCount < MIN_PASTE_CHARS || pasteWordCount < MIN_PASTE_WORDS || pasteCharCount > MAX_PASTE_CHARS)
+                      ? "text-amber-700"
+                      : "text-muted-foreground"
+                  }`}
+                >
+                  {pasteWordCount.toLocaleString()} words · {pasteCharCount.toLocaleString()} characters
+                  {" "}
+                  <span className="opacity-70">(need ≥{MIN_PASTE_WORDS} words / ≥{MIN_PASTE_CHARS} chars · max {MAX_PASTE_CHARS.toLocaleString()} chars)</span>
+                </span>
+                <InfoTip
+                  side="left"
+                  label="Saving is instant — unlike PDFs, pasted text doesn't need background processing. It shows up below as “Pending review” right away."
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                <Button onClick={handlePasteText} disabled={pasting || pasteDisabledReason !== null} title={pasteDisabledReason ?? undefined}>
+                  {pasting ? <><Loader2 size={14} className="animate-spin mr-2" />Saving…</> : "Save text"}
+                </Button>
+                {(pasteTitle !== "" || pasteText !== "") && (
+                  <Button
+                    variant="outline"
+                    disabled={pasting}
+                    onClick={() => { setPasteTitle(""); setPasteText(""); }}
+                  >
+                    Clear
+                  </Button>
+                )}
+                {pasteDisabledReason && (pasteTitle !== "" || pasteText !== "") && (
+                  <span className="text-xs text-muted-foreground">{pasteDisabledReason}</span>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
