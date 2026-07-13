@@ -73,6 +73,11 @@ An earlier draft of this handoff got that wrong.
 - **RCA overdue** (incident RESOLVED, RCA obligation past due) → a recurring nudge. **This is the alert that
   would have saved June 21.**
 
+**Recipient: `isaamm@jiive.ai`** (i.e. `OPS_ALERT_EMAIL` — confirm it's already set to this; if so, there is
+literally nothing to configure). Note this alerts Isaam only — the incident *log* is team-visible to all
+admins, but the email nudge goes to one inbox. If Juvi/Jabir should also be alerted, a shared/alias address
+is the cleaner answer than a second recipient list.
+
 `WhatsAppService` remains the right channel for messaging the **customer** (e.g. a call-scheduling nudge) —
 use `sendTemplate()` outside the 24h window. It is not for internal alerts.
 
