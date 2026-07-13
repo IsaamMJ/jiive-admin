@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { TranscriptEntry, LlmModel, AwsState } from "./types";
-import { InfoTip } from "./InfoTip";
+import { InfoTip } from "@/components/InfoTip";
 import { PatientPicker } from "./PatientPicker";
 
 // Maximum prompt length accepted by the backend contract.

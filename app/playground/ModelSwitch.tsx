@@ -3,7 +3,7 @@
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LlmModel, AwsState, HfStatus } from "./types";
-import { InfoTip } from "./InfoTip";
+import { InfoTip } from "@/components/InfoTip";
 
 interface Props {
   model: LlmModel;

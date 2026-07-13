@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { ChevronDown, ChevronUp, X, UserRound } from "lucide-react";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { InfoTip } from "./InfoTip";
+import { InfoTip } from "@/components/InfoTip";
 import type { PatientDetail, PatientSummary } from "./types";
 
 interface Props {

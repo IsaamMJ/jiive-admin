@@ -25,7 +25,7 @@ import type {
   ConversationDetail,
 } from "./types";
 import { isTransitioning } from "./types";
-import { InfoTip } from "./InfoTip";
+import { InfoTip } from "@/components/InfoTip";
 
 // Poll every 10s during transitions / after a box action.
 const POLL_MS = 10_000;

@@ -27,7 +27,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import api from "@/lib/api";
-import { InfoTip } from "@/app/playground/InfoTip";
+import { InfoTip } from "@/components/InfoTip";
 import type {
   RagDocument,
   RagOverview,
