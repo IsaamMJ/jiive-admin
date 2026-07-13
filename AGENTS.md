@@ -18,6 +18,10 @@ Top-level directories under `app/` (Next.js App Router) and their owners:
 - `app/dashboard/` — landing dashboard (overview widgets, recent activity)
 - `app/users/` — user list + per-user profile (`[id]/page.tsx`)
 - `app/bookings/` — bookings (day-grouped + flat views, expandable detail)
+- `app/incidents/` — incident log (list + file form + detail w/ timeline + RCA). The whole
+  backend contract lives in `app/incidents/types.ts` + `app/incidents/api.ts` — no axios
+  anywhere else in the module. Suspected-incidents panel is derived client-side from
+  `GET /bookings`, so it works without the incidents backend.
 - `app/results/` — lab results list + per-result detail
 - `app/credits/` — balances, packs, action costs
 - `app/audit-log/` — audit trail viewer
