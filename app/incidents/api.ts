@@ -116,11 +116,18 @@ function normalizeDetail(raw: WireIncidentEnvelope | WireIncident): IncidentDeta
     vendorCommitment: w.vendorCommitment ?? null,
     tags: w.tags ?? [],
     contributingFactors: w.contributingFactors ?? [],
-    actionItems: w.actionItems ?? env.actionItems ?? [],
+    // The live response calls this `actions` (verified against dev). Reading only
+    // `actionItems` meant existing action items never rendered — the RCA block
+    // showed "no action items yet" even when the incident had them.
+    actionItems: env.actions ?? w.actionItems ?? env.actionItems ?? [],
     timeline: env.timeline ?? [],
     context: {
       customer: env.customers?.[0] ?? null,
-      address: env.address ?? null,
+      // There is no top-level `address` on the wire — it hangs off each booking.
+      // Reading only the top level made the UI claim "no address returned" while
+      // the server had sent a perfectly good one. June 21's root cause hinged on
+      // an incomplete address, so this is the last field we can afford to drop.
+      address: env.address ?? linked[0]?.address ?? siblings[0]?.address ?? null,
       bookings: linked,
       batchSiblings: siblings,
       unresolvedOrderIds,

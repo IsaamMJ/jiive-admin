@@ -21,7 +21,7 @@ import { datetimeLocalToIso, formatDateTime, toDatetimeLocalValue } from "../lib
 /** Entries written more than a few minutes after the moment they describe were back-dated. */
 const BACKDATE_THRESHOLD_MS = 5 * 60_000;
 
-function Entry({ entry }: { entry: TimelineEntry }) {
+function Entry({ entry, adminNames }: { entry: TimelineEntry; adminNames: Map<string, string> }) {
   const backdated =
     new Date(entry.createdAt).getTime() - new Date(entry.at).getTime() > BACKDATE_THRESHOLD_MS;
 
@@ -29,7 +29,14 @@ function Entry({ entry }: { entry: TimelineEntry }) {
     <li className="relative border-l border-border pb-4 pl-5 last:pb-0">
       <span className="absolute -left-[4.5px] top-1.5 h-2 w-2 rounded-full bg-border" />
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className="text-sm font-medium">{entry.admin?.name ?? "System"}</span>
+        <span className="text-sm font-medium">
+          {entry.admin?.name ??
+            (entry.adminUserId ? adminNames.get(entry.adminUserId) : undefined) ??
+            entry.actorLabel ??
+            // Genuinely no admin on the entry: the backend stamps null for the
+            // legacy ADMIN_TOKEN path (scripts), which really is "System".
+            (entry.adminUserId ? "Unknown admin" : "System")}
+        </span>
         <span className="text-xs text-muted-foreground">{formatDateTime(entry.at)}</span>
         {backdated && (
           <span
@@ -53,9 +60,12 @@ function Entry({ entry }: { entry: TimelineEntry }) {
 interface Props {
   incident: IncidentDetail;
   onUpdated: (detail: IncidentDetail) => void;
+  /** Used to turn the entry's adminUserId into a human name. */
+  admins?: Array<{ id: string; name: string }>;
 }
 
-export function IncidentTimeline({ incident, onUpdated }: Props) {
+export function IncidentTimeline({ incident, onUpdated, admins = [] }: Props) {
+  const adminNames = new Map((admins ?? []).map((a) => [a.id, a.name]));
   const [body, setBody] = useState("");
   const [at, setAt] = useState(() => toDatetimeLocalValue(new Date()));
   // Computed on change, never during render — reading the clock while rendering
@@ -156,7 +166,7 @@ export function IncidentTimeline({ incident, onUpdated }: Props) {
           </p>
         ) : (
           <ul className="flex flex-col">
-            {entries.map((e) => <Entry key={e.id} entry={e} />)}
+            {entries.map((e) => <Entry adminNames={adminNames} key={e.id} entry={e} />)}
           </ul>
         )}
 

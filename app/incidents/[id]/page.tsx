@@ -291,7 +291,7 @@ export default function IncidentDetailPage() {
 
         <IncidentContextBlock context={incident.context} />
 
-        <IncidentTimeline incident={incident} onUpdated={setIncident} />
+        <IncidentTimeline incident={incident} onUpdated={setIncident} admins={admins} />
 
         <IncidentRcaBlock incident={incident} onUpdated={setIncident} />
       </div>

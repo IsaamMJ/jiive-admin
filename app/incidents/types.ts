@@ -127,6 +127,8 @@ export interface IncidentAddress {
 /** A booking resolved from an order ID, or pulled in as a payment-batch sibling. */
 export interface IncidentBooking {
   id: string;
+  /** The wire nests the address here, not at the envelope's top level. */
+  address?: IncidentAddress | null;
   thyrocareOrderId: string | null;
   thyrocareLeadId: string | null;
   patientName: string | null;
@@ -170,7 +172,15 @@ export interface TimelineEntry {
   /** Back-datable — people paste yesterday's thread today. */
   at: string; // ISO
   body: string;
-  admin: AdminRef | null;
+  /**
+   * VERIFIED on dev: the wire sends `adminUserId` only — there is no nested admin
+   * object. The UI resolves the name from the admin list it already loads. Getting
+   * this wrong labelled every human-written entry "System", which for an evidence
+   * log is the one thing it must never do: who said what, when, is the whole point.
+   */
+  adminUserId?: string | null;
+  actorLabel?: string | null;
+  admin?: AdminRef | null;
   attachments: TimelineAttachment[];
   createdAt: string; // ISO — when it was actually written (≠ `at`)
 }
@@ -358,7 +368,11 @@ export interface WireIncidentEnvelope {
   bookings?: IncidentBooking[];
   paymentBatchIds?: string[];
   timeline?: TimelineEntry[];
+  /** VERIFIED on dev: the wire calls this `actions`, not `actionItems`. */
+  actions?: IncidentActionItem[];
   actionItems?: IncidentActionItem[];
+  callLogs?: unknown[];
+  /** Not sent at the top level — the address hangs off each booking. */
   address?: IncidentAddress | null;
 }
 
