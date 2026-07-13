@@ -8,7 +8,7 @@ function byTime(a: Booking, b: Booking): number {
 
 // Backend may send "YYYY-MM-DD" or a full ISO datetime ("2026-05-09T00:00:00.000Z").
 // Normalize to YYYY-MM-DD for bucket lookup.
-function normalizeDate(d: string): string {
+export function normalizeDate(d: string): string {
   if (!d) return d;
   return d.length >= 10 ? d.slice(0, 10) : d;
 }

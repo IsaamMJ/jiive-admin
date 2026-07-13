@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   Sparkles,
   BookOpen,
+  Siren,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getToken } from "@/lib/auth";
@@ -34,6 +35,7 @@ const nav = [
   { href: "/users", label: "Users", icon: Users },
   { href: "/bookings", label: "Bookings", icon: CalendarCheck },
   { href: STUCK_HREF, label: "Stuck Bookings", icon: AlertTriangle },
+  { href: "/incidents", label: "Incidents", icon: Siren },
   { href: "/results", label: "Results", icon: FlaskConical },
   { href: "/packages", label: "Packages", icon: PackageCheck },
   { href: "/credits/balances", label: "Credit Balances", icon: Coins },
