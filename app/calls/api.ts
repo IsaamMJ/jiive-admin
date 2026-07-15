@@ -94,6 +94,36 @@ export async function logCall(body: LogCallRequest): Promise<LogCallResponse> {
   return r.data;
 }
 
+/**
+ * Add a plain free-text REMARK against a person — the "I called them, here's what
+ * they said" note, with none of the connected/refused/CSAT ceremony.
+ *
+ * Stored as a call log with disposition "remark": note-only, no score, and
+ * NON-TERMINAL (the person stays in the queue), so remarks accumulate as a
+ * running notebook under their previous calls.
+ *
+ * ⚠️ Needs the backend to accept disposition "remark" (note-only, csat not
+ * required). Until it does, this 400s — surfaced to the operator, never silent.
+ */
+export async function addRemark(input: {
+  userId: string;
+  queueReason: CallQueueReason;
+  notes: string;
+  bookingId?: string;
+  incidentId?: string;
+}): Promise<LogCallResponse> {
+  const payload: Record<string, unknown> = {
+    userId: input.userId,
+    queueReason: input.queueReason,
+    disposition: "remark",
+    notes: input.notes.trim(),
+  };
+  if (input.bookingId) payload.bookingId = input.bookingId;
+  if (input.incidentId) payload.incidentId = input.incidentId;
+  const r = await api.post<LogCallResponse>("/calls", payload);
+  return r.data;
+}
+
 // ── Stats ────────────────────────────────────────────────────────────────────
 
 /**

@@ -3,13 +3,14 @@
 export const dynamic = "force-dynamic";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Phone, PhoneCall, RotateCw } from "lucide-react";
+import { toast } from "sonner";
+import { Loader2, MessageSquarePlus, Phone, PhoneCall, RotateCw } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
-import { getCallQueue, getCallStats, callErrorMessage } from "./api";
+import { addRemark, getCallQueue, getCallStats, callErrorMessage } from "./api";
 import {
   telHref,
   type CallQueueRow,
@@ -32,6 +33,79 @@ function whatTheyBooked(row: CallQueueRow): string {
     return `${row.bookingCount} tests${row.testTypes?.length ? ` (${row.testTypes.join(", ")})` : ""}`;
   }
   return row.testType || "—";
+}
+
+/**
+ * The lightweight path the operator asked for: after ringing someone, just type a
+ * free-text remark and save it. No disposition, no CSAT — that lives in the full
+ * Log-call dialog, which stays put. A remark is non-terminal, so the person stays
+ * in the queue and the remark shows up under their previous calls.
+ */
+function RemarkBox({ row, onSaved }: { row: CallQueueRow; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+
+  async function save() {
+    const notes = text.trim();
+    if (!notes || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await addRemark({
+        userId: row.userId,
+        queueReason: row.queueReason,
+        notes,
+        bookingId: row.bookingId,
+        incidentId: row.incident?.id,
+      });
+      toast.success("Remark saved");
+      setText("");
+      setOpen(false);
+      onSaved();
+    } catch (e) {
+      toast.error(callErrorMessage(e));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+      >
+        <MessageSquarePlus size={13} />
+        Add remark
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        disabled={saving}
+        rows={3}
+        placeholder="After the call — type what they said / your understanding…"
+        className="w-full min-w-0 resize-y rounded-lg border border-input bg-transparent px-2.5 py-2 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30"
+      />
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={save} disabled={saving || text.trim() === ""}>
+          {saving ? <><Loader2 size={14} className="mr-1.5 animate-spin" />Saving…</> : "Save remark"}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={saving} onClick={() => { setText(""); setOpen(false); }}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export default function CallsPage() {
@@ -173,6 +247,8 @@ export default function CallsPage() {
                         </button>
                       )}
                       {isOpen && <div className="mt-2"><PreviousCallsList calls={row.previousCalls} /></div>}
+
+                      <RemarkBox row={row} onSaved={() => { load(); loadStats(); }} />
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2">
