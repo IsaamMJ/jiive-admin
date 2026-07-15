@@ -69,6 +69,46 @@ still exists. Low priority once P1b lands, but useful regardless for traceabilit
 
 ---
 
+## 🟠 Field bug (2026-07-15) — pdf-parse mangles styled/callout text mid-word
+
+**More evidence for P1b**, from a real doc (`What-is-a-Heart-Attack.pdf`, AHA fact sheet). The body
+extracted 1:1, but the "MY QUESTIONS" yellow callout box came out with spurious mid-word spaces:
+
+| Source PDF | Extracted (corrupted) |
+|---|---|
+| "How soon can I **return** to work **after** my **heart attack**?" | "How soon can I **re turn** to work **af ter** my **he art at tack**?" |
+| "in my **area**?" | "in my **are a**?" |
+
+**Cause:** single upload runs `pdfParse(file.buffer)` (`rag-document.service.ts:65`), and pdf-parse
+reconstructs text from glyph x-positions — so a positioned/kerned text box (the callout is a styled
+overlay, not normal flow) gets split inside words. This is the same class of failure as the ligature
+issue, and it's the concrete reason the **single-upload → Docling** move (P1b above) matters: Docling is
+layout-aware and handles positioned blocks far better.
+
+**Impact:** garbled tokens ("re turn") degrade embedding + retrieval — a query for "return to work after
+a heart attack" may miss the very chunk that answers it.
+
+**Definition of done:** re-ingesting this PDF (via the Docling path once single upload uses it) yields
+clean words in the callout. If Docling still splits it (the box may be image-overlaid text), add either
+an OCR fallback for such blocks or a deterministic post-parse normalization that rejoins obvious mid-word
+splits — and re-check already-ingested PDFs for the same pattern.
+
+## ✅ Confirmed intended (2026-07-15 — reported for confirmation, not bugs)
+
+- **A pending doc shows `0` chunks.** Correct: chunking runs at **Approve** (`chunkDocument` inside
+  `approveV2`), not at upload. A `pending_review` doc legitimately has 0 chunks until approved.
+- **The document counter increments on upload, before approve.** It counts all docs including
+  `pending_review`. Reasonable (you want pending docs visible in the count); flagging only so the
+  product owner can confirm that's the intended semantics rather than "approved docs only".
+
+## Frontend note (already fixed, no backend action)
+
+- The "new upload got another document's title" report was a **frontend** stale-state bug (the title box
+  kept a previous file's name). Fixed in jiive-admin (`747ccdc`). Backend title derivation is correct —
+  a no-title upload of `zzz-uniquename.pdf` came back titled `zzz-uniquename`. **Optional hardening:**
+  the backend could enforce title uniqueness (or append a short suffix on collision) as defence in depth,
+  since nothing stops two docs sharing a title today.
+
 ## Still unvalidated (not a code item)
 
 - **Docling table fidelity on real samples** — nobody has run the team's actual table-heavy medical PDFs
