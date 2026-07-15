@@ -116,6 +116,11 @@ export default function KnowledgeBasePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadTitle, setUploadTitle] = useState("");
+  // Did the operator type the title themselves? If not, it's an auto-fill derived
+  // from the filename and must re-sync when they pick a different file. The old
+  // `if (!uploadTitle)` guard couldn't tell the two apart, so switching files kept
+  // the previous file's name and uploaded a new PDF under the wrong title.
+  const [uploadTitleEdited, setUploadTitleEdited] = useState(false);
   const [uploading, setUploading] = useState(false);
 
   // Drag-and-drop (single upload drop zone)
@@ -286,7 +291,10 @@ export default function KnowledgeBasePage() {
       return;
     }
     setUploadFile(file);
-    if (!uploadTitle) setUploadTitle(file.name.replace(/\.pdf$/i, ""));
+    // Auto-fill the title from the filename unless the operator has typed their
+    // own. Always re-sync on a new file so a switched file can't inherit a stale
+    // title from a previous selection.
+    if (!uploadTitleEdited) setUploadTitle(file.name.replace(/\.pdf$/i, ""));
     if (file.size > 5 * 1024 * 1024) {
       toast.info("Large file — consider Bulk upload for background processing (avoids upload timeouts).");
     }
@@ -308,6 +316,7 @@ export default function KnowledgeBasePage() {
       toast.success("Document uploaded — awaiting review.");
       setUploadFile(null);
       setUploadTitle("");
+      setUploadTitleEdited(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
       fetchDocs();
       fetchOverview();
@@ -652,7 +661,13 @@ export default function KnowledgeBasePage() {
                   <Input
                     placeholder="Document title (optional)"
                     value={uploadTitle}
-                    onChange={(e) => setUploadTitle(e.target.value)}
+                    onChange={(e) => {
+                      setUploadTitle(e.target.value);
+                      // Any keystroke means the operator owns the title now —
+                      // stop auto-syncing it from the filename. An empty box means
+                      // they cleared it: fall back to auto-fill for the next file.
+                      setUploadTitleEdited(e.target.value.trim() !== "");
+                    }}
                     className="flex-1"
                     disabled={uploading}
                   />
@@ -665,6 +680,7 @@ export default function KnowledgeBasePage() {
                     onClick={() => {
                       setUploadFile(null);
                       setUploadTitle("");
+                      setUploadTitleEdited(false);
                       if (fileInputRef.current) fileInputRef.current.value = "";
                     }}
                   >
