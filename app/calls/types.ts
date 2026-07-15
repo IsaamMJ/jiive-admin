@@ -319,7 +319,10 @@ export const CSAT_TOP_2_BOX: readonly number[] = [4, 5];
  * Thyrocare.
  */
 export interface CallStats {
+  /** Call ATTEMPTS (any real disposition). Excludes remarks — those are notes. */
   totalCalls: number;
+  /** Free-text remarks logged. Counted separately from calls by the backend. */
+  remarkCount: number;
   byDisposition: Record<string, number>;
   csatResponses: number;
   csatTop2BoxPercent: number;

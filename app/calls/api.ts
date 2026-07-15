@@ -137,7 +137,11 @@ export async function getCallStats(): Promise<CallStats> {
   const r = await api.get<Partial<CallStats>>("/calls/stats");
   const d = r.data ?? {};
   return {
+    // totalCalls counts call ATTEMPTS (connected/no_answer/… — everything with a
+    // real disposition). Remarks are notes, not calls, so the backend keeps them
+    // out of this number and reports them separately as remarkCount.
     totalCalls: d.totalCalls ?? 0,
+    remarkCount: d.remarkCount ?? 0,
     byDisposition: d.byDisposition ?? {},
     csatResponses: d.csatResponses ?? 0,
     csatTop2BoxPercent: d.csatTop2BoxPercent ?? 0,

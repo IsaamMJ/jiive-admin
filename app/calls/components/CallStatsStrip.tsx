@@ -59,8 +59,15 @@ export function CallStatsStrip({
         <Stat
           label="Calls logged"
           value={String(stats.totalCalls)}
-          sub={`${stats.optedOutUsers} opted out`}
-          info="Every call, including the ones nobody answered. That's the point of one-tap logging — an attempt count that only records the calls that went well is fiction."
+          sub={
+            [
+              stats.remarkCount > 0 ? `${stats.remarkCount} remark${stats.remarkCount !== 1 ? "s" : ""}` : null,
+              `${stats.optedOutUsers} opted out`,
+            ]
+              .filter(Boolean)
+              .join(" · ")
+          }
+          info="Call attempts, including the ones nobody answered — that's the point of one-tap logging: an attempt count that only records the calls that went well is fiction. Free-text remarks are notes, not calls, so they're counted separately."
         />
       </div>
 
