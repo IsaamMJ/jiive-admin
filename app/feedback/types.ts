@@ -199,3 +199,11 @@ export interface PickableUser {
   name: string;
   whatsappPhone: string;
 }
+
+/** One of a customer's bookings, for the optional "which visit?" picker. */
+export interface PickableBooking {
+  id: string;
+  testType: string;
+  appointmentDate: string;
+  status: string;
+}

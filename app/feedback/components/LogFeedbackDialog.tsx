@@ -14,13 +14,14 @@ import {
 } from "@/components/ui/dialog";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
-import { feedbackErrorMessage, listUsersForPicker, logFeedback } from "../api";
+import { feedbackErrorMessage, listUserBookings, listUsersForPicker, logFeedback } from "../api";
 import {
   CHANNEL_EXPLAINER,
   CHANNEL_HINT,
   CHANNEL_LABEL,
   FEEDBACK_CHANNELS,
   type FeedbackChannel,
+  type PickableBooking,
   type PickableUser,
 } from "../types";
 
@@ -52,6 +53,11 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
   const [query, setQuery] = useState("");
   const [customer, setCustomer] = useState<PickableUser | null>(null);
 
+  // Optional "which visit is this about?" — loaded once a customer is picked.
+  // Feedback is often general (no booking), so this never blocks saving.
+  const [bookings, setBookings] = useState<PickableBooking[]>([]);
+  const [bookingId, setBookingId] = useState<string>("");
+
   const [channel, setChannel] = useState<FeedbackChannel | null>(null);
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -67,6 +73,24 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
   // while it's mounted, so this can't fight it (they never coexist).
   useEffect(() => {
     if (customer !== null) notesRef.current?.focus();
+  }, [customer]);
+
+  // Load the picked customer's bookings for the optional visit selector. Reset the
+  // selection whenever the customer changes. Best-effort — a failure just leaves
+  // the (optional) selector empty; it never blocks logging feedback.
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred a tick so the reset isn't a synchronous setState in the effect body
+    // (cascading-render lint; same pattern used elsewhere in the module).
+    const t = setTimeout(() => {
+      setBookingId("");
+      setBookings([]);
+      if (customer === null) return;
+      listUserBookings(customer.id)
+        .then((bs) => { if (!cancelled) setBookings(bs); })
+        .catch(() => {});
+    }, 0);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [customer]);
 
   // Load the customer list once the dialog opens. GET /users already works today,
@@ -120,6 +144,7 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
         userId: customer.id,
         channel,
         notes,
+        ...(bookingId ? { bookingId } : {}),
       });
       const userId = customer.id;
       toast.success("Saved — organizing the note…");
@@ -217,6 +242,32 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
               </>
             )}
           </div>
+
+          {/* Optional — tie this feedback to one of the customer's visits. Only
+              shown once a customer with bookings is picked; never required. */}
+          {customer !== null && bookings.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-sm font-medium">
+                Which visit? <span className="font-normal text-muted-foreground">(optional)</span>
+                <InfoTip label="Tie this feedback to a specific booking if it's about one — otherwise leave it as general feedback about the customer." />
+              </span>
+              <select
+                value={bookingId}
+                onChange={(e) => setBookingId(e.target.value)}
+                disabled={submitting}
+                className="w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30"
+              >
+                <option value="">General — not about a specific visit</option>
+                {bookings.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {(b.testType || "Test").replace(/_/g, " ")}
+                    {b.appointmentDate ? ` · ${b.appointmentDate.slice(0, 10)}` : ""}
+                    {b.status ? ` · ${b.status.replace(/_/g, " ")}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* 2 — Channel. Required. Three big tap targets. */}
           <div className="flex flex-col gap-2">

@@ -24,6 +24,7 @@ import {
   type LogFeedbackRequest,
   type LogFeedbackResponse,
   type OrganizeResult,
+  type PickableBooking,
   type PickableUser,
 } from "./types";
 
@@ -171,6 +172,23 @@ export async function listUsersForPicker(): Promise<PickableUser[]> {
     id: u.id,
     name: u.name ?? "",
     whatsappPhone: u.whatsappPhone ?? "",
+  }));
+}
+
+/**
+ * GET /users/:id — used only for its `bookings`, to offer an OPTIONAL "which
+ * booking is this feedback about?" picker once a customer is chosen. Feedback is
+ * often general (no booking), so this is never required.
+ */
+export async function listUserBookings(userId: string): Promise<PickableBooking[]> {
+  const r = await api.get<{ bookings?: Array<{ id: string; testType?: string; appointmentDate?: string; status?: string }> }>(
+    `/users/${userId}`
+  );
+  return (r.data?.bookings ?? []).map((b) => ({
+    id: b.id,
+    testType: b.testType ?? "",
+    appointmentDate: b.appointmentDate ?? "",
+    status: b.status ?? "",
   }));
 }
 
