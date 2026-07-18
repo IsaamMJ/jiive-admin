@@ -33,6 +33,26 @@ import { ExportMenu } from "./components/ExportMenu";
 
 const PAGE_SIZE = 50;
 
+/**
+ * Flatten the AI note's preview into one clean scannable line: drop the section
+ * headings and the "[channel · date]" tags, strip bullet markers, and join the
+ * points with " · ". The row then clamps it to two lines with a real ellipsis
+ * instead of the raw multi-line note cut off mid-word.
+ */
+function cleanPreview(text: string): string {
+  const points = text
+    .replace(/\s*\[[^\]]*\]/g, "") // drop [in_person · 2026-07-18] tags
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => l.startsWith("-") || l.startsWith("•")) // keep bullet points, drop headings
+    .map((l) => l.replace(/^[-•]\s*/, "").trim())
+    .filter(Boolean);
+  // If the AI didn't use bullets, fall back to the raw text (tags already stripped).
+  if (points.length === 0) return text.replace(/\s*\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+  return points.join(" · ");
+}
+
 export default function FeedbackPage() {
   const router = useRouter();
 
@@ -267,13 +287,13 @@ export default function FeedbackPage() {
                       </span>
                     </div>
 
-                    {c.organizeStatus === "pending" ? (
-                      <span className="text-sm italic text-muted-foreground">
-                        {c.organizedPreview || "Organizing the note…"}
-                      </span>
+                    {c.organizeStatus === "pending" && !c.organizedPreview ? (
+                      <span className="text-sm italic text-muted-foreground">Organizing the note…</span>
                     ) : (
-                      <p className="line-clamp-3 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-                        {c.organizedPreview || "No summary yet — open to read the dumps."}
+                      <p className="line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+                        {c.organizedPreview
+                          ? cleanPreview(c.organizedPreview)
+                          : "No summary yet — open to read the dumps."}
                       </p>
                     )}
 
