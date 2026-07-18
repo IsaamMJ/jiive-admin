@@ -22,7 +22,7 @@ import {
   Sparkles,
   BookOpen,
   Siren,
-  PhoneCall,
+  MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getToken } from "@/lib/auth";
@@ -37,7 +37,7 @@ const nav = [
   { href: "/bookings", label: "Bookings", icon: CalendarCheck },
   { href: STUCK_HREF, label: "Stuck Bookings", icon: AlertTriangle },
   { href: "/incidents", label: "Incidents", icon: Siren },
-  { href: "/calls", label: "Feedback Calls", icon: PhoneCall },
+  { href: "/feedback", label: "Feedback", icon: MessageSquare },
   { href: "/results", label: "Results", icon: FlaskConical },
   { href: "/packages", label: "Packages", icon: PackageCheck },
   { href: "/credits/balances", label: "Credit Balances", icon: Coins },
