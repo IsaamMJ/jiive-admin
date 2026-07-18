@@ -205,5 +205,45 @@ export interface PickableBooking {
   id: string;
   testType: string;
   appointmentDate: string;
+  appointmentTime: string;
   status: string;
+}
+
+/**
+ * A VISIT — one appointment slot — groups the panels booked together (endocrine +
+ * respiratory + brain + … are one visit, not five). The `/users` payload doesn't
+ * carry the payment-batch id, so we group by slot (date + time): every panel of a
+ * visit shares it. `bookingId` is a representative booking of the visit sent on
+ * POST /feedback to tie the feedback to that visit.
+ */
+export interface PickableVisit {
+  key: string;
+  bookingId: string;
+  appointmentDate: string;
+  appointmentTime: string;
+  testTypes: string[];
+  status: string;
+}
+
+/** Collapse a customer's bookings into visits, grouped by slot (date + time). */
+export function groupBookingsIntoVisits(bookings: PickableBooking[]): PickableVisit[] {
+  const bySlot = new Map<string, PickableBooking[]>();
+  for (const b of bookings) {
+    const key = `${(b.appointmentDate || "").slice(0, 10)}|${b.appointmentTime || ""}`;
+    (bySlot.get(key) ?? bySlot.set(key, []).get(key)!).push(b);
+  }
+  return [...bySlot.entries()].map(([key, group]) => {
+    const first = group[0];
+    // If the panels of one visit somehow disagree on status, say "mixed" rather
+    // than pretending one of them speaks for all.
+    const statuses = new Set(group.map((g) => g.status).filter(Boolean));
+    return {
+      key,
+      bookingId: first.id,
+      appointmentDate: (first.appointmentDate || "").slice(0, 10),
+      appointmentTime: first.appointmentTime || "",
+      testTypes: group.map((g) => g.testType).filter(Boolean),
+      status: statuses.size > 1 ? "mixed" : (first.status || ""),
+    };
+  });
 }

@@ -20,6 +20,7 @@ import {
   CHANNEL_HINT,
   CHANNEL_LABEL,
   FEEDBACK_CHANNELS,
+  groupBookingsIntoVisits,
   type FeedbackChannel,
   type PickableBooking,
   type PickableUser,
@@ -124,6 +125,10 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
       )
       .slice(0, MAX_MATCHES);
   }, [users, query]);
+
+  // Collapse the customer's bookings into VISITS (one appointment slot), so a
+  // combo booked together shows as one option, not one row per panel.
+  const visits = useMemo(() => groupBookingsIntoVisits(bookings), [bookings]);
 
   const notesEmpty = notes.trim() === "";
   const blocker: string | null =
@@ -243,13 +248,14 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
             )}
           </div>
 
-          {/* Optional — tie this feedback to one of the customer's visits. Only
-              shown once a customer with bookings is picked; never required. */}
-          {customer !== null && bookings.length > 0 && (
+          {/* Optional — tie this feedback to one of the customer's VISITS (a slot,
+              which may bundle several test panels). Only shown once a customer with
+              bookings is picked; never required. */}
+          {customer !== null && visits.length > 0 && (
             <div className="flex flex-col gap-2">
               <span className="flex items-center gap-1.5 text-sm font-medium">
                 Which visit? <span className="font-normal text-muted-foreground">(optional)</span>
-                <InfoTip label="Tie this feedback to a specific booking if it's about one — otherwise leave it as general feedback about the customer." />
+                <InfoTip label="A visit is one appointment — it may include several test panels booked together, shown as one option here. Tie this feedback to a visit if it's about one; otherwise leave it as general feedback about the customer." />
               </span>
               <select
                 value={bookingId}
@@ -258,13 +264,18 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
                 className="w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30"
               >
                 <option value="">General — not about a specific visit</option>
-                {bookings.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {(b.testType || "Test").replace(/_/g, " ")}
-                    {b.appointmentDate ? ` · ${b.appointmentDate.slice(0, 10)}` : ""}
-                    {b.status ? ` · ${b.status.replace(/_/g, " ")}` : ""}
-                  </option>
-                ))}
+                {visits.map((v) => {
+                  const tests =
+                    v.testTypes.length === 1
+                      ? v.testTypes[0].replace(/_/g, " ")
+                      : `${v.testTypes.length} tests`;
+                  const when = [v.appointmentDate, v.appointmentTime].filter(Boolean).join(" ");
+                  return (
+                    <option key={v.key} value={v.bookingId}>
+                      {[when, tests, v.status.replace(/_/g, " ")].filter(Boolean).join(" · ")}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           )}

@@ -181,13 +181,14 @@ export async function listUsersForPicker(): Promise<PickableUser[]> {
  * often general (no booking), so this is never required.
  */
 export async function listUserBookings(userId: string): Promise<PickableBooking[]> {
-  const r = await api.get<{ bookings?: Array<{ id: string; testType?: string; appointmentDate?: string; status?: string }> }>(
+  const r = await api.get<{ bookings?: Array<{ id: string; testType?: string; appointmentDate?: string; appointmentTime?: string; status?: string }> }>(
     `/users/${userId}`
   );
   return (r.data?.bookings ?? []).map((b) => ({
     id: b.id,
     testType: b.testType ?? "",
     appointmentDate: b.appointmentDate ?? "",
+    appointmentTime: b.appointmentTime ?? "",
     status: b.status ?? "",
   }));
 }
