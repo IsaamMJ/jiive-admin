@@ -49,8 +49,11 @@ const CHANNEL_ICON: Record<FeedbackChannel, LucideIcon> = {
 // Background organize is async server-side. After a dump is saved (or a manual
 // re-organize), poll a small fixed number of times to pick up the refreshed note,
 // then stop — never an infinite poll.
-const POLL_MS = 3000;
-const MAX_POLLS = 5;
+// Backoff schedule (ms) between poll fetches, after the immediate one. An LLM
+// organize can easily take longer than a naive 15s window — that left the note
+// stuck showing "Organizing…" until a manual reload. This runs ~90s total, then
+// hands off to a manual "Check now" rather than spinning forever.
+const POLL_BACKOFF_MS = [2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 15000];
 
 export default function CustomerNotePage() {
   const params = useParams<{ userId: string }>();
@@ -74,6 +77,9 @@ export default function CustomerNotePage() {
 
   // Polling machinery — a timer ref plus a fetch counter, both cancellable.
   const [polling, setPolling] = useState(false);
+  // Set when the poll window ran out while the note was STILL organizing — the UI
+  // then offers a manual "Check now" instead of a forever spinner.
+  const [pollExhausted, setPollExhausted] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollTries = useRef(0);
 
@@ -92,15 +98,24 @@ export default function CustomerNotePage() {
     stopPoll();
     pollTries.current = 0;
     setPolling(true);
+    setPollExhausted(false);
     const fetchOnce = () => {
-      pollTries.current += 1;
       getCustomerNote(userId)
         .then((fresh) => {
           setNote(fresh);
-          if (fresh.organizeStatus !== "pending" || pollTries.current >= MAX_POLLS) {
+          if (fresh.organizeStatus !== "pending") {
+            stopPoll(); // organized (ok or failed) — done.
+            return;
+          }
+          const delay = POLL_BACKOFF_MS[pollTries.current];
+          pollTries.current += 1;
+          if (delay === undefined) {
+            // Ran out of the window and it's STILL organizing — stop the spinner and
+            // let the operator check when ready, rather than spinning indefinitely.
+            setPollExhausted(true);
             stopPoll();
           } else {
-            pollTimer.current = setTimeout(fetchOnce, POLL_MS);
+            pollTimer.current = setTimeout(fetchOnce, delay);
           }
         })
         .catch(() => stopPoll()); // transient error — stop politely; the note stays readable.
@@ -237,7 +252,21 @@ export default function CustomerNotePage() {
                   Organized note
                   <InfoTip label={ORGANIZED_EXPLAINER} />
                 </span>
-                {status === "pending" || polling ? (
+                {polling ? (
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Loader2 size={12} className="animate-spin" />
+                    Organizing…
+                  </span>
+                ) : status === "pending" && pollExhausted ? (
+                  <button
+                    type="button"
+                    onClick={() => runPoll()}
+                    className="flex items-center gap-1.5 text-xs text-primary underline-offset-2 hover:underline"
+                  >
+                    <RotateCw size={12} />
+                    Still organizing — check now
+                  </button>
+                ) : status === "pending" ? (
                   <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <Loader2 size={12} className="animate-spin" />
                     Organizing…
