@@ -143,6 +143,18 @@ export default function CustomerNotePage() {
     return () => clearTimeout(t);
   }, [load]);
 
+  // Whenever the note is pending and we're not already polling, poll until it
+  // settles. This is the robust catch-all: it covers "just added a dump", AND
+  // "navigated into a note that's still organizing" (previously that just showed
+  // a frozen 'Organizing…' until a manual reload). Deferred a tick so runPoll's
+  // setState isn't called synchronously in the effect body. The `!polling` /
+  // `!pollExhausted` guards stop it from re-triggering or looping.
+  useEffect(() => {
+    if (note?.organizeStatus !== "pending" || polling || pollExhausted) return;
+    const t = setTimeout(() => runPoll(), 0);
+    return () => clearTimeout(t);
+  }, [note?.organizeStatus, polling, pollExhausted, runPoll]);
+
   // Clear any in-flight poll on unmount (without touching state post-unmount).
   useEffect(() => () => { if (pollTimer.current) clearTimeout(pollTimer.current); }, []);
 
