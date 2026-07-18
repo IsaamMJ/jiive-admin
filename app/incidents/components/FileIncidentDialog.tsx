@@ -129,8 +129,10 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
       ? "Set when it happened."
       : occurredInFuture
       ? "That time is in the future — file it after it happens."
-      : orderIds.length === 0
-      ? "Add at least one order ID."
+      // Order IDs are OPTIONAL — many incidents have no order (no-slots,
+      // app/backend outage, systemic issue, a near-miss caught before any order).
+      // Requiring one blocked exactly those. (The backend must also drop its
+      // min-1 rule — see docs/handoff-backend-incident-optional-orders.md.)
       : null;
 
   async function handleSubmit() {
@@ -333,8 +335,8 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
           {/* 6 — Order IDs (searchable multi-select). */}
           <div className="flex flex-col gap-1.5">
             <span className="flex items-center gap-1.5 text-sm font-medium">
-              Order IDs
-              <InfoTip label="One ID is enough — the server expands it into the customer, the slot, the phlebo's name and phone, the address, and every other order paid for in the same batch. Add more if several orders are involved." />
+              Order IDs <span className="font-normal text-muted-foreground">(optional)</span>
+              <InfoTip label="Optional — leave empty for incidents with no order (no slots available, an app/backend outage, a systemic issue, a near-miss). If there IS an order, one ID is enough: the server expands it into the customer, slot, phlebo, address, and every order in the same payment batch." />
             </span>
             <OrderPicker value={orderIds} onChange={setOrderIds} disabled={submitting} />
           </div>
