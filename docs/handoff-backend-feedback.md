@@ -1,71 +1,96 @@
-# Handoff → jiive-backend — Customer Feedback (log + feed + export)
+# Handoff → jiive-backend — Customer Feedback (per-customer living note, AI-organized)
 
-**Date:** 2026-07-18
+**Date:** 2026-07-18 (supersedes the earlier v1 in this file)
 **From:** jiive-admin (frontend)
-**Verified against:** `origin/dev` — `prisma/schema.prisma` (`CallLog`, line 746), the live `/calls` endpoints.
+**Verified against:** `origin/dev` — `prisma/schema.prisma` (`CallLog`, line 746), the live `/calls` endpoints, `GET /users`.
 
 ## What this is
 
-A lightweight **feedback log**, replacing the "Feedback Calls" queue framing. Feedback arrives from
-anywhere — in person, phone, or WhatsApp — often unprompted. The operator logs it against any customer in
-their own words. The team reads the feed when they have time; periodically it's **exported and fed to an
-AI** to surface themes and improvements. That export path is the whole point, so the data must be clean and
-aggregatable.
+A feedback log where the operator **clicks a customer, dumps whatever they know in a paragraph, and the
+AI organizes it** into a clean, readable note. Come back later, dump more, and the AI folds it into the
+same note and improves it. So each customer builds **one living, AI-organized feedback note** over time.
+The team reads these; periodically the whole set is exported and fed to an AI for themes/improvements.
 
-**Deliberately NOT in v1:** no queue, no CSAT score, no call ceremony, no in-app AI, no incremental
-watermark, no rolling digest. Those earn their way in *after* we confirm the logging habit forms. Build the
-smallest thing.
+**Where it lives:** a dedicated Feedback page (not the customer profile).
 
-## Storage — reuse `call_logs`, add one column
+### The non-negotiable
 
-A feedback entry is a `CallLog` row with **`disposition = "remark"`** (already exists: note-only,
-non-terminal, no CSAT, excluded from CSAT stats) plus one new field:
+**Every raw dump is stored append-only and kept verbatim, forever.** The AI-organized text is a *derived
+view on top* — never the only copy. "AI improves it" means the AI rewrites, and a rewrite can silently drop
+a detail the operator typed; the raw dumps are the recovery path. Same principle as the knowledge base:
+keep the source, let AI assist, never let AI be the sole record of the truth.
 
-- **Add `channel String?`** to `CallLog` (`@map("channel")`). Values: `"in_person" | "call" | "text"`.
-  Plain string + a TS enum, per house convention. Additive migration, nullable (existing rows have none).
+### Two more guardrails
 
-`queueReason` is currently required. Unprompted feedback has no queue reason — **accept `"manual"`** as a
-valid `queueReason` value for these entries (or make the column nullable; `"manual"` is cleaner for filtering).
+- **The dump saves instantly; the AI organizes AFTER, in the background, best-effort.** If the AI is slow or
+  down, the raw dump is already saved and readable — the organized view catches up later or on retry. **AI
+  must never block or fail the save.**
+- The AI organize step must **preserve every fact and invent nothing** — it groups and tidies, it does not
+  summarize away or embellish.
 
-Everything else is already on the model: `userId`, `bookingId?`, `incidentId?`, `notes`, `tags[]`,
-`calledByAdminId` (attribution, stamped server-side from the token), `createdAt`.
+## Storage
 
-## Endpoints (all under `/api/v1/admin`, `RolesGuard` + `@Roles('admin')`, `identify()` for the actor)
+**1. Raw dumps — reuse `call_logs`.** Each dump is a `CallLog` row with `disposition = "remark"` (already
+exists: note-only, non-terminal, no CSAT, excluded from CSAT stats) plus:
+- **Add `channel String?`** (`in_person | call | text`) — additive, nullable, plain string + TS enum.
+- Accept `queueReason = "manual"` for these (or make the column nullable).
+- `userId`, `bookingId?`, `notes` (the raw dump), `calledByAdminId` (stamped from token), `createdAt` — all already present. Append-only; never edited or deleted.
 
-### 1. `POST /feedback`
-Body: `{ userId, channel, notes, tags?, bookingId?, incidentId? }`
-- `userId` required; `channel` one of the three; `notes` required, non-empty (trimmed).
-- Server stamps `calledByAdminId`/`calledByLabel` from the token, sets `disposition="remark"`,
-  `queueReason="manual"`, `createdAt=now()`.
-- Reject unknown keys with a clear 400 (the strict-schema behaviour you already have).
-- Returns the created row: `{ id, createdAt, channel, userId, notes, tags }`.
+**2. Organized note — NEW table `feedback_summaries`** (one row per customer):
+- `userId` (unique FK → User), `organizedText` (the AI-organized note), `organizedAt` (when last regenerated),
+  `sourceDumpCount` (how many raw dumps it was built from — lets the UI show "organizing…" when a newer dump
+  isn't reflected yet), `organizeStatus` (`ok | pending | failed`).
 
-### 2. `GET /feedback` — the feed
-Query: `limit` (default 50), `offset`, `from?`, `to?` (ISO, filter on `createdAt`), `channel?`, `tag?`, `userId?`.
-- Returns **only manual feedback** (`disposition="remark"` with a `channel` set) — NOT call-queue
-  dispositions. Newest first.
-- Shape: `{ total, feedback: [{ id, createdAt, channel, userId, userName, notes, tags, loggedByLabel, bookingId?, incidentId? }] }`
-- `userName` resolved from the user; `loggedByLabel` = the admin who logged it.
+## Endpoints (`/api/v1/admin`, `RolesGuard` + `@Roles('admin')`, actor via `identify()`)
 
-### 3. `GET /feedback/export` — CSV download
-Query: `from?`, `to?`, `includePii?` (**default false**).
-- Returns `text/csv` with `Content-Disposition: attachment; filename="feedback-<range>.csv"`.
-- Columns (PII off, the default): `date, channel, feedback, tags, logged_by`.
-- Columns (PII on): prepend `customer_name, phone`.
-- **Default no-PII matters:** the export is fed to an external AI, and this is health-adjacent personal
-  data. Theme analysis doesn't need names. CSV-escape the free-text `notes` (commas, quotes, newlines).
+### 1. `POST /feedback` — log a raw dump
+Body: `{ userId, channel, notes, bookingId? }` (`notes` required, non-empty; reject unknown keys with a 400).
+- Stores the raw dump immediately, stamps actor + `createdAt`, returns it: `{ id, createdAt, channel, userId, notes }`.
+- **Then kicks off the AI organize for that customer in the background** — the response does NOT wait for it.
 
-### Tags
-Reuse `GET /incidents/meta` → `callTags`. No new tag endpoint.
+### 2. `GET /feedback/customers` — the feed (customers with feedback)
+Query: `limit`, `offset`, `from?`, `to?`, `channel?`, `search?`.
+- Newest-activity first: `{ total, customers: [{ userId, userName, lastDumpAt, dumpCount, organizedPreview, organizeStatus }] }`.
+- `organizedPreview` = first ~200 chars of the organized note (for the feed row).
 
-### Customer picker (no backend work for v1)
-The "log against any customer" search uses the existing `GET /users?limit=200`, filtered client-side.
-Fine under a few hundred users. **Scale follow-up (not now):** a `GET /users?search=<name|phone>` server
-endpoint once the user count outgrows a client-side filter.
+### 3. `GET /feedback/customers/:userId` — the living note
+- `{ userName, organizedText, organizedAt, organizeStatus, dumps: [{ id, createdAt, channel, notes, loggedByLabel }] }`.
+- `dumps` newest-first — the raw record, always available under the organized view.
 
-## Migration
-Additive only: one nullable column on `call_logs`. Standard `prisma migrate`. No backfill.
+### 4. `POST /feedback/customers/:userId/organize` — (re)run the AI organize
+- On-demand refresh / retry when the background organize failed or the operator wants it re-run.
+- Returns the refreshed `{ organizedText, organizedAt, organizeStatus }`. Best-effort: on AI failure, return
+  `organizeStatus: "failed"` with the last-good `organizedText` intact — never 500 the caller, never wipe the note.
 
-## Out of scope (v1)
-Queue · CSAT · attempt tracking on feedback · in-app AI summarize · incremental/watermark export · rolling
-digest · server-side user search. All deferred until real usage justifies them.
+### 5. `GET /feedback/export` — CSV download
+Query: `from?`, `to?`, `includePii?` (**default false**), `mode?` (`dumps` | `organized`, default `dumps`).
+- `text/csv`, `Content-Disposition: attachment`. Default no-PII (`date, channel, feedback, logged_by`); PII on
+  prepends `customer_name, phone`. `organized` mode exports one row per customer's organized note instead.
+- **Default no-PII matters:** the CSV is fed to an external AI, this is health-adjacent personal data, and
+  theme analysis doesn't need names. CSV-escape the free text.
+
+## The AI organize step
+
+- **Input:** all raw dumps for the customer, chronological, each with its channel + date.
+- **Output:** one organized note — grouped by theme (service, phlebo, results, pricing, requests…), every
+  fact from every dump preserved, channel/date retained where useful, nothing invented or dropped.
+- **Runs:** in the background after each `POST /feedback`, and on demand via endpoint 4. Uses your existing
+  LLM infrastructure. Idempotent — re-running over the same dumps yields the same organized note.
+- **Failure is survivable:** raw dumps are untouched; the note shows the last-good version + a `failed` flag;
+  a retry (endpoint 4, or the next dump) tries again.
+
+### Tags / customer picker
+- Tag chips (optional) reuse `GET /incidents/meta → callTags`.
+- Customer picker uses existing `GET /users?limit=200` (verified: returns `{ users: [{id, name, whatsappPhone}] }`),
+  filtered client-side. Server-side `?search=` is a scale follow-up, not now.
+
+## Migrations
+Additive: one nullable column on `call_logs` (`channel`) + one new table (`feedback_summaries`). No backfill.
+
+## Retention
+Raw dump `notes` are health-adjacent — apply the **same 12-month scrub** you already do for call notes. When
+a customer's dumps are scrubbed, regenerate (or clear) their organized note so it can't outlive its sources.
+
+## Out of scope (still)
+No queue, no CSAT, no attempt tracking, no incremental/watermark export, no rolling cross-customer digest
+(the export→external-AI path covers themes for now). These come later if usage justifies them.
