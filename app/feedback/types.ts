@@ -1,22 +1,28 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// The Customer Feedback backend contract. THE ONLY PLACE these shapes are declared.
+// The Customer Feedback backend contract (v2 — the living-note model).
+// THE ONLY PLACE these shapes are declared.
 //
-// Source of truth: docs/handoff-backend-feedback.md (2026-07-18). Every endpoint
-// and field below is stated there; nothing here was invented. The backend is NOT
-// live yet — it is being built in parallel to that handoff — so every consumer
+// The model: each customer has ONE living, AI-organized feedback note that
+// accumulates. An operator picks a customer, dumps a paragraph, and the note
+// updates. Every raw dump is kept verbatim forever underneath; the AI-organized
+// text is a view on top, never a replacement. The save is instant — the AI
+// organize runs in the BACKGROUND, so no save ever waits on it.
+//
+// The backend is NOT live yet — it is being built in parallel — so every consumer
 // renders real error/empty states and nothing is mocked.
 //
 // The endpoints (all relative to the admin API base, which already carries
 // `/api/v1/admin` — see lib/api.ts):
-//   POST /feedback          — log one piece of feedback.
-//   GET  /feedback          — the feed (paginated, filterable).
-//   GET  /feedback/export   — CSV download (blob).
-//   GET  /incidents/meta    — also carries the feedback tag vocabulary (callTags).
-//   GET  /users?limit=200   — existing; the customer picker filters it client-side.
+//   POST /feedback                          — save one dump (organize runs async).
+//   GET  /feedback/customers                — the feed of customers, newest activity first.
+//   GET  /feedback/customers/:userId        — one customer's living note + raw dumps.
+//   POST /feedback/customers/:userId/organize — re-organize the note (retry/refresh).
+//   GET  /feedback/export                   — CSV download (blob).
+//   GET  /users?limit=200                   — existing; the customer picker filters it client-side.
 //
-// ⚠️ POST /feedback takes EXACTLY the keys in LogFeedbackRequest. The backend 400s
-// on an unknown key rather than ignoring it. Do not add a field without the
-// handoff pinning it down.
+// ⚠️ POST /feedback takes EXACTLY the keys in LogFeedbackRequest, and no query
+// endpoint takes a param not listed here. The backend 400s on an unknown key/param
+// rather than ignoring it. Do not add a field without the contract pinning it down.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Channels ─────────────────────────────────────────────────────────────────
@@ -34,7 +40,7 @@ export const CHANNEL_LABEL: Record<FeedbackChannel, string> = {
   text: "Text",
 };
 
-/** Feed glyphs — the handoff specifies these three. Distinct at a glance, no colour needed. */
+/** Feed glyphs — the contract specifies these three. Distinct at a glance, no colour needed. */
 export const CHANNEL_EMOJI: Record<FeedbackChannel, string> = {
   in_person: "🧍",
   call: "📞",
@@ -47,115 +53,140 @@ export const CHANNEL_HINT: Record<FeedbackChannel, string> = {
   text: "WhatsApp or SMS.",
 };
 
+// ── Organize status ──────────────────────────────────────────────────────────
+//
+// The lifecycle of the AI-organized note. A dump is saved instantly; organizing
+// happens in the background, so a freshly-saved note sits at "pending" until the
+// backend catches up, and can land on "failed" if the AI errored.
+
+export const ORGANIZE_STATUSES = ["ok", "pending", "failed"] as const;
+export type OrganizeStatus = (typeof ORGANIZE_STATUSES)[number];
+
 // ── Explainer copy (InfoTips — project convention) ───────────────────────────
 
 export const CHANNEL_EXPLAINER =
   "Where the feedback reached us — in person, a call, or a text. One tap, and it's the difference between “people are unhappy” and “everyone who grumbles in person is fine on WhatsApp”. The channel is often the pattern.";
 
+export const ORGANIZED_EXPLAINER =
+  "An AI reads every raw dump you've logged for this customer and keeps ONE tidy summary up to date. It's a view on top of your words — never a replacement. Tap “Show original dumps” any time to read exactly what was said, verbatim.";
+
 export const EXPORT_PII_EXPLAINER =
   "The export is fed to an AI to surface themes, and this is health-adjacent personal data. Theme analysis doesn't need names — so customer names and phone numbers are left OUT by default. Untick the exclusion only when you have a specific reason to include them.";
 
-export const TAGS_EXPLAINER =
-  "A fixed list, never a text box. Free text guarantees “phlebo late”, “Phlebo Late” and “phlebotomist was late” all coexist and none of them count. These raw counts are the artefact the export turns into a scorecard.";
+export const EXPORT_MODE_EXPLAINER =
+  "“Raw dumps” exports exactly what was logged, one row per dump — the honest source. “Organized notes” exports the AI summary, one row per customer — tidier, but a step removed from the actual words. Default is raw dumps.";
 
-/** "phlebo_late" → "Phlebo late". Used for any server tag value we have no label for. */
-export function humanizeEnumValue(value: string): string {
-  const spaced = value.replace(/[_-]+/g, " ").trim();
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-// ── POST /feedback ───────────────────────────────────────────────────────────
+// ── POST /feedback — save one dump ───────────────────────────────────────────
 
 /**
- * The log payload.
+ * The dump payload.
  *
- * ⚠️ EXACTLY these keys — the backend 400s on an unknown key. Attribution
- * (`loggedByLabel`) and `createdAt` are stamped SERVER-SIDE from the bearer
- * token; the frontend must not send them. Optional fields are omitted entirely
- * when empty rather than sent as null/"" (see api.ts logFeedback).
+ * ⚠️ EXACTLY these keys — the backend 400s on an unknown key. Attribution and
+ * `createdAt` are stamped SERVER-SIDE from the bearer token; the frontend must not
+ * send them. There are deliberately NO tags in v2: the whole point is "pick a
+ * customer, pick a channel, dump a paragraph" — the AI-organized note and the
+ * export→theme-analysis do the theming, so manual tagging is friction we removed.
+ * A plain dump sends exactly `{ userId, channel, notes }`; `bookingId` is included
+ * only when present.
  */
 export interface LogFeedbackRequest {
   userId: string;
   channel: FeedbackChannel;
-  /** Required, non-empty (trimmed). This is the whole entry — someone's actual words. */
+  /** Required, non-empty (trimmed). Someone's actual words — a paragraph, not a field. */
   notes: string;
-  tags?: string[];
   bookingId?: string;
-  incidentId?: string;
 }
 
-/** The created row the server echoes back. */
+/** The saved dump the server echoes back. Organizing has NOT happened yet at this point. */
 export interface LogFeedbackResponse {
   id: string;
   createdAt: string;
   channel: FeedbackChannel;
   userId: string;
   notes: string;
-  tags: string[];
 }
 
-// ── GET /feedback — the feed ─────────────────────────────────────────────────
+// ── GET /feedback/customers — the feed ───────────────────────────────────────
+//
+// The feed is CUSTOMERS, not individual dumps: one row per customer who has any
+// feedback, newest activity first. `organizedPreview` is a short cut of the living
+// note; `organizeStatus` says whether that preview is current, still organizing,
+// or failed.
 
-export interface FeedbackEntry {
-  id: string;
-  createdAt: string;
-  channel: FeedbackChannel;
+export interface FeedbackCustomer {
   userId: string;
-  /** Resolved from the user by the server. */
   userName: string;
-  notes: string;
-  tags: string[];
-  /** The admin who logged it. */
-  loggedByLabel: string;
-  bookingId?: string | null;
-  incidentId?: string | null;
+  /** ISO — the most recent dump's timestamp. Drives the newest-first order. */
+  lastDumpAt: string;
+  dumpCount: number;
+  /** A short cut of the organized note. May be empty while organizeStatus === "pending". */
+  organizedPreview: string;
+  organizeStatus: OrganizeStatus;
 }
 
-export interface FeedbackListParams {
+export interface CustomerFeedParams {
   limit?: number;
   offset?: number;
-  /** ISO — filter on createdAt. */
+  /** ISO — filter on activity date. */
   from?: string;
   to?: string;
   channel?: FeedbackChannel;
-  tag?: string;
-  userId?: string;
+  /** Free-text name/phone search, matched server-side. */
+  search?: string;
 }
 
-export interface FeedbackListResponse {
+export interface CustomerFeedResponse {
   total: number;
-  feedback: FeedbackEntry[];
+  customers: FeedbackCustomer[];
+}
+
+// ── GET /feedback/customers/:userId — the living note ─────────────────────────
+
+/** One raw dump. The verbatim record — always reachable under the organized note. */
+export interface FeedbackDump {
+  id: string;
+  createdAt: string;
+  channel: FeedbackChannel;
+  /** The operator's actual words. Rendered verbatim, never paraphrased. */
+  notes: string;
+  /** The admin who logged it. */
+  loggedByLabel: string;
+}
+
+export interface CustomerNote {
+  userName: string;
+  /** The AI-organized summary. Empty/placeholder while organizeStatus === "pending". */
+  organizedText: string;
+  /** ISO — when the organized text was last regenerated. Null before the first organize. */
+  organizedAt: string | null;
+  organizeStatus: OrganizeStatus;
+  /** Raw dumps, newest first. The source of truth beneath the summary. */
+  dumps: FeedbackDump[];
+}
+
+// ── POST /feedback/customers/:userId/organize — retry / refresh ──────────────
+
+/** The result of a manual re-organize. Same fields the note carries for the summary. */
+export interface OrganizeResult {
+  organizedText: string;
+  organizedAt: string | null;
+  organizeStatus: OrganizeStatus;
 }
 
 // ── GET /feedback/export ─────────────────────────────────────────────────────
+
+/** What the export writes: one row per raw dump, or one row per customer's note. */
+export const EXPORT_MODES = ["dumps", "organized"] as const;
+export type ExportMode = (typeof EXPORT_MODES)[number];
 
 export interface ExportParams {
   from?: string;
   to?: string;
   /** DEFAULT FALSE. Health-adjacent data goes to an external AI — names stay out. */
   includePii?: boolean;
+  /** DEFAULT "dumps" — the honest, verbatim source. */
+  mode?: ExportMode;
 }
-
-// ── Meta (GET /incidents/meta — it carries the feedback tag vocabulary) ───────
-
-export interface MetaOption {
-  value: string;
-  label: string;
-}
-
-/**
- * The tag vocabulary. NO local fallback, deliberately: inventing a tag would
- * either 400 on save or — worse — write a value that never aggregates with the
- * server's, quietly corrupting the only number the export produces. If meta is
- * unreachable, the log dialog shows no chips and says so; free-text notes still
- * work. Same call the incidents/calls modules make against GET /incidents/meta.
- */
-export interface FeedbackMeta {
-  tags: MetaOption[];
-}
-
-/** Meta is tags-only here and has no safe fallback — an empty list is the degraded state. */
-export const EMPTY_FEEDBACK_META: FeedbackMeta = { tags: [] };
 
 // ── Customer picker (existing GET /users?limit=200, filtered client-side) ─────
 

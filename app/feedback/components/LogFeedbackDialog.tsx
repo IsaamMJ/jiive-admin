@@ -20,17 +20,19 @@ import {
   CHANNEL_HINT,
   CHANNEL_LABEL,
   FEEDBACK_CHANNELS,
-  TAGS_EXPLAINER,
   type FeedbackChannel,
   type PickableUser,
 } from "../types";
-import { useFeedbackMeta } from "../lib/useFeedbackMeta";
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Fired after feedback is logged, so the feed can refetch. */
-  onLogged: () => void;
+  /**
+   * Fired with the customer's id after a dump is saved. The feed page uses it to
+   * navigate straight to that customer's living-note view (where the note is now
+   * organizing in the background).
+   */
+  onLogged: (userId: string) => void;
 }
 
 const CHANNEL_ICON: Record<FeedbackChannel, LucideIcon> = {
@@ -43,8 +45,6 @@ const CHANNEL_ICON: Record<FeedbackChannel, LucideIcon> = {
 const MAX_MATCHES = 8;
 
 export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
-  const { meta, degraded: metaDegraded } = useFeedbackMeta();
-
   // Customer picker.
   const [users, setUsers] = useState<PickableUser[] | null>(null);
   const [usersError, setUsersError] = useState<string | null>(null);
@@ -54,7 +54,6 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
 
   const [channel, setChannel] = useState<FeedbackChannel | null>(null);
   const [notes, setNotes] = useState("");
-  const [tags, setTags] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   // Guards a second submit fired before the first response lands — double-tapping
   // a big button on a phone is easy, and a duplicate entry is a lie about how many
@@ -112,10 +111,6 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
       ? "Type what they said."
       : null;
 
-  function toggleTag(value: string) {
-    setTags((t) => (t.includes(value) ? t.filter((x) => x !== value) : [...t, value]));
-  }
-
   async function submit() {
     if (submittingRef.current || customer === null || channel === null || notesEmpty) return;
     submittingRef.current = true;
@@ -125,11 +120,13 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
         userId: customer.id,
         channel,
         notes,
-        tags,
       });
-      toast.success("Feedback logged");
-      onLogged();
+      const userId = customer.id;
+      toast.success("Saved — organizing the note…");
       onOpenChange(false);
+      // Hand the caller the customer so it can open their living note, where the
+      // background organize will be picked up by polling.
+      onLogged(userId);
     } catch (err) {
       // Stay open with the notes intact — a network blip must never cost the
       // operator what they just typed. Only the server's own message is shown.
@@ -271,43 +268,6 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
               placeholder="Their words, or your understanding of them…"
               className="w-full min-w-0 resize-y rounded-lg border border-input bg-transparent px-2.5 py-2 text-base leading-relaxed transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm dark:bg-input/30"
             />
-          </div>
-
-          {/* 4 — Tags. Optional. Chips only, never a free-text tag input. */}
-          <div className="flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 text-sm font-medium">
-              Tags
-              <span className="text-xs font-normal text-muted-foreground">(optional)</span>
-              <InfoTip label={TAGS_EXPLAINER} />
-            </span>
-            {meta.tags.length === 0 ? (
-              <span className="text-xs text-amber-400">
-                {metaDegraded
-                  ? "Couldn't load the tag list from the server, so there's nothing to tick — write it in the notes instead. We'd rather have no tag than a made-up one that never adds up."
-                  : "No tags configured on the server yet — the notes above carry the feedback regardless."}
-              </span>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {meta.tags.map((t) => (
-                  <button
-                    key={t.value}
-                    type="button"
-                    aria-pressed={tags.includes(t.value)}
-                    disabled={submitting}
-                    onClick={() => toggleTag(t.value)}
-                    className={cn(
-                      "min-h-9 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
-                      tags.includes(t.value)
-                        ? "border-primary bg-primary/15 text-primary"
-                        : "border-border text-muted-foreground hover:bg-accent"
-                    )}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         </div>
 

@@ -8,7 +8,12 @@ import { Input } from "@/components/ui/input";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
 import { exportFeedback, feedbackErrorMessage } from "../api";
-import { EXPORT_PII_EXPLAINER, type ExportParams } from "../types";
+import {
+  EXPORT_MODE_EXPLAINER,
+  EXPORT_PII_EXPLAINER,
+  type ExportMode,
+  type ExportParams,
+} from "../types";
 
 type Range = "all" | "30d" | "custom";
 
@@ -36,10 +41,11 @@ export function ExportMenu() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [excludePii, setExcludePii] = useState(true);
+  const [mode, setMode] = useState<ExportMode>("dumps");
   const [downloading, setDownloading] = useState(false);
 
   function resolveParams(): ExportParams {
-    const params: ExportParams = { includePii: !excludePii };
+    const params: ExportParams = { includePii: !excludePii, mode };
     if (range === "30d") {
       params.from = localDate(30);
       params.to = localDate(0);
@@ -138,6 +144,35 @@ export function ExportMenu() {
                   />
                 </div>
               )}
+
+              <div className="flex flex-col gap-1.5">
+                <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  What to export
+                  <InfoTip label={EXPORT_MODE_EXPLAINER} />
+                </span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {([
+                    ["dumps", "Raw dumps"],
+                    ["organized", "Organized notes"],
+                  ] as Array<[ExportMode, string]>).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={mode === value}
+                      onClick={() => setMode(value)}
+                      className={cn(
+                        "min-h-9 rounded-lg border px-2 text-xs font-medium transition-colors",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        mode === value
+                          ? "border-primary bg-primary/15 text-primary"
+                          : "border-border text-muted-foreground hover:bg-accent"
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-card/60 px-2.5 py-2">
                 <input

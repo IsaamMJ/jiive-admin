@@ -3,7 +3,9 @@
 export const dynamic = "force-dynamic";
 
 import { useCallback, useEffect, useState } from "react";
-import { Hammer, MessageSquarePlus, Plus } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Hammer, MessageSquarePlus, Plus, RotateCw, Search } from "lucide-react";
+import { toast } from "sonner";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,27 +14,29 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { formatDateTime } from "@/app/incidents/lib/datetime";
-import { feedbackErrorMessage, isNotBuiltYet, listFeedback } from "./api";
+import {
+  feedbackErrorMessage,
+  isNotBuiltYet,
+  listFeedbackCustomers,
+  organizeCustomerNote,
+} from "./api";
 import {
   CHANNEL_EMOJI,
   CHANNEL_LABEL,
   FEEDBACK_CHANNELS,
-  humanizeEnumValue,
+  type CustomerFeedParams,
   type FeedbackChannel,
-  type FeedbackEntry,
-  type FeedbackListParams,
+  type FeedbackCustomer,
 } from "./types";
-import { useFeedbackMeta } from "./lib/useFeedbackMeta";
-import { FeedbackTagStrip } from "./components/FeedbackTagStrip";
 import { LogFeedbackDialog } from "./components/LogFeedbackDialog";
 import { ExportMenu } from "./components/ExportMenu";
 
 const PAGE_SIZE = 50;
 
 export default function FeedbackPage() {
-  const { meta } = useFeedbackMeta();
+  const router = useRouter();
 
-  const [feedback, setFeedback] = useState<FeedbackEntry[]>([]);
+  const [customers, setCustomers] = useState<FeedbackCustomer[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,37 +45,40 @@ export default function FeedbackPage() {
   const [notBuilt, setNotBuilt] = useState(false);
 
   const [channel, setChannel] = useState<FeedbackChannel | "all">("all");
-  const [tag, setTag] = useState<string>("all");
+  const [search, setSearch] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [offset, setOffset] = useState(0);
 
   const [logOpen, setLogOpen] = useState(false);
+  // Which row's "retry organize" is in flight — keyed by userId so only that row
+  // shows a spinner.
+  const [retrying, setRetrying] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    const params: FeedbackListParams = { limit: PAGE_SIZE, offset };
+    const params: CustomerFeedParams = { limit: PAGE_SIZE, offset };
     if (channel !== "all") params.channel = channel;
-    if (tag !== "all") params.tag = tag;
-    // Dates are sent as-is (YYYY-MM-DD); the backend filters createdAt.
+    if (search.trim()) params.search = search.trim();
+    // Dates are sent as-is (YYYY-MM-DD); the backend filters on activity date.
     if (from) params.from = from;
     if (to) params.to = to;
 
-    listFeedback(params)
+    listFeedbackCustomers(params)
       .then((r) => {
-        setFeedback(r.feedback);
+        setCustomers(r.customers);
         setTotal(r.total);
         setError(null);
         setNotBuilt(false);
       })
       .catch((err: unknown) => {
-        setFeedback([]);
+        setCustomers([]);
         setTotal(0);
         setNotBuilt(isNotBuiltYet(err));
         setError(feedbackErrorMessage(err));
       })
       .finally(() => setLoading(false));
-  }, [offset, channel, tag, from, to]);
+  }, [offset, channel, search, from, to]);
 
   // Debounced like app/incidents — setting loading during the synchronous effect
   // pass otherwise cascades an extra render on every filter keystroke.
@@ -87,14 +94,40 @@ export default function FeedbackPage() {
     return (v: T) => { setter(v); setOffset(0); };
   }
 
+  function openCustomer(userId: string) {
+    router.push(`/feedback/${userId}`);
+  }
+
+  // A row whose organize failed can be retried inline without opening the note.
+  async function retryOrganize(userId: string) {
+    if (retrying) return;
+    setRetrying(userId);
+    try {
+      const r = await organizeCustomerNote(userId);
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.userId === userId
+            ? { ...c, organizeStatus: r.organizeStatus, organizedPreview: r.organizedText || c.organizedPreview }
+            : c
+        )
+      );
+      toast.success(r.organizeStatus === "failed" ? "Still couldn't organize" : "Re-organizing…");
+    } catch (err) {
+      toast.error(feedbackErrorMessage(err));
+    } finally {
+      setRetrying(null);
+    }
+  }
+
   return (
     <AdminLayout title="Feedback">
       <div className="flex flex-col gap-5 pb-24 sm:pb-8">
-        {/* Header — export + log, plus the derived tag strip below. */}
+        {/* Header — export + log. */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="max-w-xl text-sm text-muted-foreground">
-            Everything customers tell us — in person, on a call, or over text. Logged in their words,
-            read when there&apos;s time, and exported for theme analysis.
+            One living note per customer. Dump what they tell you — in person, on a call, or over
+            text — and an AI keeps each customer&apos;s note tidy. Your raw words are always kept
+            underneath.
           </p>
           <div className="flex items-center gap-2">
             <ExportMenu />
@@ -105,10 +138,22 @@ export default function FeedbackPage() {
           </div>
         </div>
 
-        <FeedbackTagStrip feedback={feedback} />
-
         {/* Filters — kept light. */}
         <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search
+              size={15}
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              aria-label="Search customers"
+              value={search}
+              onChange={(e) => resetPaging(setSearch)(e.target.value)}
+              placeholder="Search name or phone…"
+              className="w-56 pl-8"
+            />
+          </div>
+
           <Select
             value={channel}
             onValueChange={(v) => resetPaging(setChannel)((v as FeedbackChannel) ?? "all")}
@@ -126,24 +171,6 @@ export default function FeedbackPage() {
                 <SelectItem key={c} value={c}>
                   {CHANNEL_EMOJI[c]} {CHANNEL_LABEL[c]}
                 </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={tag} onValueChange={(v) => resetPaging(setTag)(v ?? "all")}>
-            <SelectTrigger className="w-48">
-              <SelectValue>
-                {(v: unknown) =>
-                  v === "all"
-                    ? "All tags"
-                    : (meta.tags.find((t) => t.value === v)?.label ?? humanizeEnumValue(String(v)))
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All tags</SelectItem>
-              {meta.tags.map((t) => (
-                <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -167,14 +194,14 @@ export default function FeedbackPage() {
           </div>
 
           <span className="text-sm text-muted-foreground">
-            {loading ? "…" : notBuilt || error ? "" : `${total} entr${total !== 1 ? "ies" : "y"}`}
+            {loading ? "…" : notBuilt || error ? "" : `${total} customer${total !== 1 ? "s" : ""}`}
           </span>
         </div>
 
-        {/* Feed */}
+        {/* Feed of customers */}
         {loading ? (
           <div className="flex flex-col gap-2">
-            {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-20" />)}
+            {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-24" />)}
           </div>
         ) : notBuilt ? (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card/60 px-6 py-10 text-center">
@@ -182,9 +209,9 @@ export default function FeedbackPage() {
             <div className="flex flex-col gap-1">
               <span className="text-sm font-medium">The feedback API isn&apos;t available yet</span>
               <span className="max-w-md text-sm text-muted-foreground">
-                The backend is being built in parallel. This page — the feed, filters, and export —
-                will light up the moment it ships. Logging a piece of feedback below will start
-                working then too.
+                The backend is being built in parallel. This page — the feed, the living notes, and
+                export — will light up the moment it ships. Logging a piece of feedback below will
+                start working then too.
               </span>
             </div>
             <Button variant="outline" size="sm" onClick={load}>Retry</Button>
@@ -197,12 +224,13 @@ export default function FeedbackPage() {
             </div>
             <Button variant="outline" size="sm" onClick={load}>Retry</Button>
           </div>
-        ) : feedback.length === 0 ? (
+        ) : customers.length === 0 ? (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card/60 px-6 py-10 text-center">
             <MessageSquarePlus size={22} className="text-muted-foreground" />
-            <span className="text-sm font-medium">No feedback logged yet.</span>
+            <span className="text-sm font-medium">No feedback yet.</span>
             <span className="max-w-md text-xs text-muted-foreground">
-              When a customer tells us something — good or bad — log it here in their words.
+              When a customer tells us something — good or bad — log it against them and it becomes
+              their living note.
             </span>
             <Button variant="outline" size="sm" onClick={() => setLogOpen(true)}>
               <Plus size={14} className="mr-1.5" />
@@ -212,44 +240,57 @@ export default function FeedbackPage() {
         ) : (
           <>
             <ul className="flex flex-col gap-2.5">
-              {feedback.map((entry) => (
-                <li key={entry.id} className="rounded-xl border border-border bg-card/60 p-3.5 sm:p-4">
-                  <div className="flex items-start gap-3">
-                    <span
-                      className="mt-0.5 text-lg leading-none"
-                      aria-label={CHANNEL_LABEL[entry.channel]}
-                      title={CHANNEL_LABEL[entry.channel]}
-                    >
-                      {CHANNEL_EMOJI[entry.channel] ?? "💬"}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
-                        <span className="font-medium">{entry.userName || "Unknown customer"}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {formatDateTime(entry.createdAt)}
-                        </span>
-                        {entry.loggedByLabel && (
-                          <span className="text-xs text-muted-foreground">
-                            · by {entry.loggedByLabel}
-                          </span>
-                        )}
-                      </div>
-
-                      <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{entry.notes}</p>
-
-                      {entry.tags.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {entry.tags.map((t) => (
-                            <span
-                              key={t}
-                              className="rounded-full border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground"
-                            >
-                              {meta.tags.find((m) => m.value === t)?.label ?? humanizeEnumValue(t)}
-                            </span>
-                          ))}
-                        </div>
-                      )}
+              {customers.map((c) => (
+                <li key={c.userId}>
+                  {/* A div (not a button) so the failed-state retry can be a real
+                      nested button without invalid interactive-in-interactive DOM.
+                      Keyboard access is wired explicitly via role + tabIndex + keydown. */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openCustomer(c.userId)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        openCustomer(c.userId);
+                      }
+                    }}
+                    className="flex w-full cursor-pointer flex-col gap-1.5 rounded-xl border border-border bg-card/60 p-3.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-4"
+                  >
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                      <span className="font-medium">{c.userName || "Unknown customer"}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {formatDateTime(c.lastDumpAt)}
+                      </span>
+                      <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                        {c.dumpCount} dump{c.dumpCount !== 1 ? "s" : ""}
+                      </span>
                     </div>
+
+                    {c.organizeStatus === "pending" ? (
+                      <span className="text-sm italic text-muted-foreground">
+                        {c.organizedPreview || "Organizing the note…"}
+                      </span>
+                    ) : (
+                      <p className="line-clamp-3 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
+                        {c.organizedPreview || "No summary yet — open to read the dumps."}
+                      </p>
+                    )}
+
+                    {c.organizeStatus === "failed" && (
+                      <button
+                        type="button"
+                        disabled={retrying === c.userId}
+                        onClick={(e) => { e.stopPropagation(); void retryOrganize(c.userId); }}
+                        className="inline-flex w-fit items-center gap-1 rounded text-xs text-amber-500 hover:text-amber-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                      >
+                        <RotateCw
+                          size={12}
+                          className={retrying === c.userId ? "animate-spin" : undefined}
+                        />
+                        {retrying === c.userId ? "Retrying…" : "Couldn't organize — tap to retry"}
+                      </button>
+                    )}
                   </div>
                 </li>
               ))}
@@ -289,7 +330,11 @@ export default function FeedbackPage() {
         Log feedback
       </Button>
 
-      <LogFeedbackDialog open={logOpen} onOpenChange={setLogOpen} onLogged={load} />
+      <LogFeedbackDialog
+        open={logOpen}
+        onOpenChange={setLogOpen}
+        onLogged={(userId) => openCustomer(userId)}
+      />
     </AdminLayout>
   );
 }
