@@ -23,6 +23,7 @@ import {
   BookOpen,
   Siren,
   MessageSquare,
+  Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getToken } from "@/lib/auth";
@@ -51,6 +52,7 @@ const nav = [
   { href: "/thyrocare", label: "Thyrocare", icon: TestTube2 },
   { href: "/playground", label: "LLM Playground", icon: Sparkles },
   { href: "/rag", label: "Knowledge Base", icon: BookOpen },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Sidebar({ className }: { className?: string }) {
