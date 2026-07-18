@@ -60,8 +60,11 @@ interface UserDetail {
     creditBalance: { balance: number; updatedAt: string } | null;
   };
   conversations: (
-    | { type?: "chat"; direction: string; content: string; messageType?: string; createdAt: string }
-    | { type: "template"; direction: "outbound"; content: string; templateName: string; status: string; createdAt: string }
+    // `displayLabel` is the human label the customer actually saw/tapped for an
+    // interactive button ("🧬 Know my Bio-Age"); `content` is the raw payload id
+    // ("disc_know_bioage"). The backend resolves it; we prefer it for display.
+    | { type?: "chat"; direction: string; content: string; displayLabel?: string | null; messageType?: string; createdAt: string }
+    | { type: "template"; direction: "outbound"; content: string; displayLabel?: string | null; templateName: string; status: string; createdAt: string }
   )[];
   bookings: {
     id: string; patientName: string; testType: string; appointmentDate: string;
@@ -72,6 +75,8 @@ interface UserDetail {
     id: string; testType: string; calculatedAge: string; chronologicalAge: string;
     ageDelta: string; status: string; createdAt: string;
     retestReminderOptIn: boolean; retestReminderSentAt: string | null;
+    /** Full shareable report link (latest non-expired token), or null if none. */
+    reportUrl?: string | null;
   }[];
 }
 
@@ -264,7 +269,7 @@ export default function UserDetailPage() {
                         <span className="text-[10px] text-primary-foreground/70">{msg.templateName}</span>
                         {failed && <span className="text-[10px] text-red-300">· failed</span>}
                       </div>
-                      <MessageBody content={msg.content} />
+                      <MessageBody content={msg.displayLabel ?? msg.content} />
                       <p className="text-xs mt-1 text-primary-foreground/60">
                         {new Date(msg.createdAt).toLocaleString()}
                       </p>
@@ -275,7 +280,7 @@ export default function UserDetailPage() {
               return (
                 <div key={i} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${msg.direction === "outbound" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
-                    <MessageBody content={msg.content} />
+                    <MessageBody content={msg.displayLabel ?? msg.content} />
                     <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
                       {new Date(msg.createdAt).toLocaleString()}
                     </p>
@@ -333,11 +338,12 @@ export default function UserDetailPage() {
                   <TableHead>Status</TableHead>
                   <TableHead>Date</TableHead>
                   <TableHead>Reminder</TableHead>
+                  <TableHead className="text-right">Report</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {results.length === 0 ? (
-                  <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
                 ) : results.map((r) => (
                   <TableRow key={r.id} className="cursor-pointer hover:bg-accent">
                     <TableCell>
@@ -357,6 +363,18 @@ export default function UserDetailPage() {
                         <span className="text-blue-400">Opted in</span>
                       ) : (
                         <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      {r.reportUrl ? (
+                        <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" className="inline-flex">
+                          <Button variant="outline" size="sm">
+                            <ExternalLink size={13} className="mr-1.5" />
+                            Open report
+                          </Button>
+                        </a>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">No link</span>
                       )}
                     </TableCell>
                   </TableRow>
