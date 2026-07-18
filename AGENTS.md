@@ -7,6 +7,15 @@ This version has breaking changes — APIs, conventions, and file structure may 
 <!-- BEGIN:lattice -->
 # Project Context (Lattice reads this file first — keep it current)
 
+## Build checklist — MANDATORY before building any feature
+
+Before writing code for any new feature or screen, read and satisfy **`docs/BUILD-CHECKLIST.md`**.
+It front-loads the recurring issues (data modeling / grouping, every UI state, async+AI latency and
+spinners, optional-vs-required fields, exact-backend-contract + live verification, mobile/craft, and a
+verify-against-live definition of done). Apply it by default — and pass it to any subagent you dispatch
+to build. Most rework in this repo has traced back to skipping item #1 (model the real-world concept,
+e.g. a *visit* is a batch of bookings — not one booking).
+
 ## Purpose
 
 Internal admin dashboard for the Jiive platform. Operators use it to view bookings, manage users, run Thyrocare orders, monitor credits/usage, and inspect infra/audit data.
