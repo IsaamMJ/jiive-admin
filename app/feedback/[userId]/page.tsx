@@ -287,7 +287,13 @@ export default function CustomerNotePage() {
 
             {/* ── Add to this ─────────────────────────────────────────────── */}
             <section className="flex flex-col gap-3 rounded-xl border border-primary/30 bg-primary/[0.04] p-4">
-              <span className="text-sm font-medium">Add to this note</span>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium">Add to this note</span>
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Sparkles size={12} className="shrink-0 text-primary" />
+                  Dump more — AI folds it into the note above and improves it. Your raw words stay below.
+                </span>
+              </div>
 
               <div className="grid grid-cols-3 gap-2">
                 {FEEDBACK_CHANNELS.map((c) => {
@@ -338,7 +344,7 @@ export default function CustomerNotePage() {
                   {adding ? (
                     <><Loader2 size={14} className="mr-2 animate-spin" />Saving…</>
                   ) : (
-                    "Add to note"
+                    <><Sparkles size={14} className="mr-1.5" />Add &amp; organize</>
                   )}
                 </Button>
               </div>

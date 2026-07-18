@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, MessageSquare, Phone, Search, User, X, type LucideIcon } from "lucide-react";
+import { Loader2, MessageSquare, Phone, Search, Sparkles, User, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -319,6 +319,10 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
               placeholder="Their words, or your understanding of them…"
               className="w-full min-w-0 resize-y rounded-lg border border-input bg-transparent px-2.5 py-2 text-base leading-relaxed transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm dark:bg-input/30"
             />
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Sparkles size={12} className="shrink-0 text-primary" />
+              Just dump it — AI tidies it into this customer&apos;s note. Your exact words are kept too.
+            </span>
           </div>
         </div>
 
@@ -342,7 +346,7 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
               {submitting ? (
                 <><Loader2 size={14} className="mr-2 animate-spin" />Saving…</>
               ) : (
-                "Save feedback"
+                <><Sparkles size={14} className="mr-1.5" />Save &amp; organize</>
               )}
             </Button>
             {blocker && <span className="text-xs text-muted-foreground">{blocker}</span>}
