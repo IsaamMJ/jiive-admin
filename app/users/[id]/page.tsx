@@ -20,7 +20,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Sparkles, ExternalLink } from "lucide-react";
+import { Sparkles, ExternalLink, Reply } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 
@@ -45,6 +45,34 @@ const TX_TYPE_COLOR: Record<string, string> = {
   expiry: "bg-red-500/20 text-red-400 border-red-500/30",
 };
 
+/** An option the bot offered on an interactive message. `title` is what the customer saw. */
+interface ConvButton {
+  id: string;
+  title: string;
+}
+
+/**
+ * The WhatsApp-style option rows shown UNDER a bot message that offered buttons —
+ * a reply-arrow + the label the customer saw, exactly as WhatsApp presents them.
+ * Rendered only when the backend supplies the button set.
+ */
+function MessageButtons({ buttons }: { buttons: ConvButton[] }) {
+  if (buttons.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-col border-t border-primary-foreground/15 pt-1">
+      {buttons.map((b) => (
+        <div
+          key={b.id}
+          className="flex items-center gap-2 border-t border-primary-foreground/10 py-1.5 text-sm text-sky-300 first:border-t-0"
+        >
+          <Reply size={14} className="shrink-0 -scale-x-100" />
+          <span>{b.title}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface UserDetail {
   user: {
     id: string;
@@ -63,8 +91,13 @@ interface UserDetail {
     // `displayLabel` is the human label the customer actually saw/tapped for an
     // interactive button ("🧬 Know my Bio-Age"); `content` is the raw payload id
     // ("disc_know_bioage"). The backend resolves it; we prefer it for display.
-    | { type?: "chat"; direction: string; content: string; displayLabel?: string | null; messageType?: string; createdAt: string }
-    | { type: "template"; direction: "outbound"; content: string; displayLabel?: string | null; templateName: string; status: string; createdAt: string }
+    //
+    // `buttons` are the options the BOT offered on an outbound interactive message
+    // (id + the title the customer saw). Rendered as WhatsApp-style option rows
+    // under the message. Present only once the backend stores the button set —
+    // see docs/handoff-backend-conversation-buttons.md. Absent = nothing extra.
+    | { type?: "chat"; direction: string; content: string; displayLabel?: string | null; messageType?: string; buttons?: ConvButton[] | null; createdAt: string }
+    | { type: "template"; direction: "outbound"; content: string; displayLabel?: string | null; templateName: string; status: string; buttons?: ConvButton[] | null; createdAt: string }
   )[];
   bookings: {
     id: string; patientName: string; testType: string; appointmentDate: string;
@@ -292,6 +325,7 @@ export default function UserDetailPage() {
                       <p className="text-xs mt-1 text-primary-foreground/60">
                         {new Date(msg.createdAt).toLocaleString()}
                       </p>
+                      {msg.buttons && <MessageButtons buttons={msg.buttons} />}
                     </div>
                   </div>
                 );
@@ -303,6 +337,7 @@ export default function UserDetailPage() {
                     <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
                       {new Date(msg.createdAt).toLocaleString()}
                     </p>
+                    {msg.buttons && <MessageButtons buttons={msg.buttons} />}
                   </div>
                 </div>
               );
