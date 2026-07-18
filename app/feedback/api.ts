@@ -176,11 +176,23 @@ export async function listUsersForPicker(): Promise<PickableUser[]> {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * The date inputs give us bare `YYYY-MM-DD`, but the backend's `from`/`to` filters
+ * require a full ISO datetime (a bare date is a 400: "from: Invalid input",
+ * verified against dev). Expand `from` to the start of that day and `to` to the
+ * END of it, so a "to" of the 31st includes everything that happened that day
+ * rather than stopping at midnight. Values already carrying a time are left as-is.
+ */
+function normalizeDateParam(key: string, value: string): string {
+  if ((key !== "from" && key !== "to") || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  return key === "from" ? `${value}T00:00:00.000Z` : `${value}T23:59:59.999Z`;
+}
+
 function toQuery(params: object): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params) as Array<[string, unknown]>) {
     if (v === undefined || v === null || v === "") continue;
-    q.set(k, String(v));
+    q.set(k, normalizeDateParam(k, String(v)));
   }
   return q.toString();
 }
