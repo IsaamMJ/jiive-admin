@@ -81,18 +81,37 @@ interface UserDetail {
 }
 
 /**
- * Render a message body with any URLs turned into clickable links that open in a
- * new tab — so an operator taps to open a report/link instead of copy-pasting it
- * out of the bubble. Non-URL text is untouched; a message with no URL is just text.
+ * Render WhatsApp inline formatting the way WhatsApp itself does, so the admin
+ * conversation reads like the real chat instead of showing raw markers:
+ *   *bold*   _italic_   ~strikethrough~   ```monospace```
+ * Anything that isn't a complete, non-empty pair is left as literal text.
+ */
+function formatWhatsApp(text: string, keyBase: string) {
+  // One token = a whole *…* / _…_ / ~…~ / ```…``` run. Split keeps the delimiters.
+  const TOKEN = /(```[^`]+```|\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~)/g;
+  return text.split(TOKEN).map((part, i) => {
+    const key = `${keyBase}-${i}`;
+    if (/^```[^`]+```$/.test(part))
+      return <code key={key} className="rounded bg-black/20 px-1 font-mono text-[0.9em] dark:bg-white/15">{part.slice(3, -3)}</code>;
+    if (/^\*[^*\n]+\*$/.test(part)) return <strong key={key}>{part.slice(1, -1)}</strong>;
+    if (/^_[^_\n]+_$/.test(part)) return <em key={key}>{part.slice(1, -1)}</em>;
+    if (/^~[^~\n]+~$/.test(part)) return <del key={key}>{part.slice(1, -1)}</del>;
+    return <span key={key}>{part}</span>;
+  });
+}
+
+/**
+ * Render a message body the way WhatsApp shows it: inline formatting (bold/italic/
+ * strike/mono) applied, and any URL turned into a clickable link that opens in a
+ * new tab — so an operator taps to open a report instead of copy-pasting it.
  */
 function MessageBody({ content }: { content: string }) {
-  // Split on http(s) URLs, keeping the URLs as separate parts. Trailing quotes/
-  // brackets/punctuation are trimmed off the link so they don't 404.
+  // Links first (no formatting inside a URL); format the text between links.
   const parts = content.split(/(https?:\/\/[^\s]+)/g);
   return (
     <p className="whitespace-pre-wrap break-words">
       {parts.map((part, i) => {
-        if (!/^https?:\/\//.test(part)) return <span key={i}>{part}</span>;
+        if (!/^https?:\/\//.test(part)) return <span key={i}>{formatWhatsApp(part, String(i))}</span>;
         const trailing = part.match(/[)\].,;:'"]+$/)?.[0] ?? "";
         const href = trailing ? part.slice(0, -trailing.length) : part;
         return (
