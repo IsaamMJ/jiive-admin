@@ -22,9 +22,11 @@ import {
   type IncidentListResponse,
   type IncidentMeta,
   type IncidentStatsResponse,
+  type IncidentDraft,
   type IncidentSummary,
   type MetaOption,
   type OpenActionsResponse,
+  type PickerBooking,
   type RcaOwedResponse,
   type UpdateActionItemRequest,
   type UpdateIncidentRequest,
@@ -34,6 +36,7 @@ import {
 import { humanizeEnumValue } from "./types";
 import type { Booking } from "@/app/bookings/lib/types";
 import { normalizeBookings } from "@/app/bookings/lib/normalizeBooking";
+import { localDateNDaysFrom } from "@/app/bookings/lib/dayLabels";
 
 // ── Normalisers ──────────────────────────────────────────────────────────────
 //
@@ -199,6 +202,21 @@ export async function fileIncident(body: FileIncidentRequest): Promise<IncidentD
   return normalizeDetail(r.data);
 }
 
+/**
+ * POST /incidents/draft — the AI drafts the judgement fields from a paragraph.
+ *
+ * Additive and non-committal: this only pre-fills the file form for review. It
+ * NEVER files anything (that stays the existing POST /incidents, unchanged), and
+ * it NEVER returns order IDs or an owner — those stay human. On AI failure the
+ * server returns 503; the caller must fall back to the empty file form rather
+ * than block filing. severity/category/vendor come back as valid enum values
+ * (server-enforced), so no normalisation is needed here.
+ */
+export async function draftIncident(text: string): Promise<IncidentDraft> {
+  const r = await api.post<IncidentDraft>("/incidents/draft", { text });
+  return r.data;
+}
+
 /** GET /incidents — list + filters, paginated. Default view is everything not CLOSED. */
 export async function listIncidents(params: IncidentListParams): Promise<IncidentListResponse> {
   const r = await api.get<{ total?: number; incidents?: WireIncident[] }>(
@@ -344,6 +362,38 @@ export async function fetchBookingsForSuspicion(params: {
 }): Promise<Booking[]> {
   const r = await api.get(`/bookings?${toQuery(params)}`);
   return normalizeBookings(r.data.bookings);
+}
+
+/**
+ * GET /bookings — feeds the searchable order-ID multi-select on the file form.
+ *
+ * There is NO server-side order search, so we fetch a wide window of bookings and
+ * filter to those that carry a thyrocareOrderId client-side (that is the only
+ * thing an incident can be linked to). Reuses the same /bookings + normalizeBookings
+ * pattern as fetchBookingsForSuspicion, just over a wider date window and capped
+ * at the widest page the list supports.
+ */
+export async function listBookingsForPicker(): Promise<PickerBooking[]> {
+  const today = new Date();
+  const r = await api.get(
+    `/bookings?${toQuery({
+      appointmentFrom: localDateNDaysFrom(today, -180),
+      appointmentTo: localDateNDaysFrom(today, 30),
+      limit: 500,
+    })}`
+  );
+  const picker: PickerBooking[] = [];
+  for (const b of normalizeBookings(r.data.bookings)) {
+    if (b.thyrocareOrderId) {
+      picker.push({
+        orderId: b.thyrocareOrderId,
+        patientName: b.patientName,
+        appointmentDate: b.appointmentDate,
+        bookingId: b.id,
+      });
+    }
+  }
+  return picker;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -441,6 +441,38 @@ export const VENDOR_SHORT_LABEL: Record<IncidentVendor, string> = {
   none: "Neither",
 };
 
+// ── AI draft (POST /incidents/draft) ─────────────────────────────────────────
+//
+// The operator dumps a paragraph, the AI drafts every judgement field, and the
+// frontend pre-fills the file form for review. It NEVER auto-files, NEVER returns
+// order IDs (those stay human, picked from a validated dropdown), and NEVER sets
+// the owner. severity/category/vendor are server-enforced to valid enum values
+// matching GET /incidents/meta; the operator can still change any of them before
+// filing. On AI failure the endpoint 503s and the UI falls back to the empty file
+// form — the draft is an accelerator, never a blocker.
+export interface IncidentDraft {
+  title: string;
+  severity: IncidentSeverity;
+  category: IncidentCategory;
+  vendor: IncidentVendor;
+  /** ISO if the text stated a time; null otherwise (the form then defaults to now). */
+  occurredAt: string | null;
+  /** The tidied narrative — preserves every fact, invents nothing. */
+  whatHappened: string;
+}
+
+// ── Order picker (client-derived from GET /bookings) ─────────────────────────
+//
+// The slim shape the searchable order-ID multi-select renders. There is no
+// server-side order search, so the picker fetches a wide window of bookings and
+// filters client-side — see listBookingsForPicker in api.ts.
+export interface PickerBooking {
+  orderId: string;
+  patientName: string;
+  appointmentDate: string; // YYYY-MM-DD
+  bookingId: string;
+}
+
 /** Everything here is optional — enrichment, done later from a laptop. */
 export interface UpdateIncidentRequest {
   title?: string;

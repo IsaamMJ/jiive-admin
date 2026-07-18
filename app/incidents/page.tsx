@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ClipboardList, Plus } from "lucide-react";
+import { AlertTriangle, ClipboardList, Plus, Sparkles } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,7 @@ import {
 } from "./types";
 import { CategoryBadge, IncidentStatusBadge, SeverityBadge, STATUS_EXPLAINER, VendorBadge } from "./components/IncidentBadges";
 import { FileIncidentDialog, type FilePrefill } from "./components/FileIncidentDialog";
+import { DraftIncidentDialog } from "./components/DraftIncidentDialog";
 import { SuspectedIncidentsPanel } from "./components/SuspectedIncidentsPanel";
 import { OpenActionsDialog } from "./components/OpenActionsDialog";
 import { formatDateTime } from "./lib/datetime";
@@ -78,6 +79,7 @@ export default function IncidentsPage() {
   const [actionsOpen, setActionsOpen] = useState(false);
 
   const [fileOpen, setFileOpen] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
   const [prefill, setPrefill] = useState<FilePrefill | null>(null);
   // Bumped on every open so the dialog remounts with fresh state initialised from
   // the prefill — no reset-on-open effect to keep in sync.
@@ -224,10 +226,19 @@ export default function IncidentsPage() {
             </Button>
           )}
 
-          <Button className="ml-auto hidden sm:inline-flex" onClick={() => openFile(null)}>
-            <Plus size={14} className="mr-1.5" />
-            File incident
-          </Button>
+          {/* Laptop-first: "Draft with AI" (dump a paragraph, AI fills the fields)
+              sits alongside the manual file button. The phone FAB below stays
+              manual-only — the AI-draft flow is the sit-down-and-write-it-up path. */}
+          <div className="ml-auto hidden gap-2 sm:flex">
+            <Button variant="outline" onClick={() => setDraftOpen(true)}>
+              <Sparkles size={14} className="mr-1.5" />
+              Draft with AI
+            </Button>
+            <Button onClick={() => openFile(null)}>
+              <Plus size={14} className="mr-1.5" />
+              File incident
+            </Button>
+          </div>
         </div>
 
         <SuspectedIncidentsPanel onFile={openFile} />
@@ -467,6 +478,14 @@ export default function IncidentsPage() {
         <Plus size={18} className="mr-1.5" />
         File incident
       </Button>
+
+      <DraftIncidentDialog
+        open={draftOpen}
+        onOpenChange={setDraftOpen}
+        // The AI draft (or the raw-text fallback on 503) opens the file form
+        // pre-filled — the human reviews, picks order IDs, and clicks File.
+        onReady={openFile}
+      />
 
       <FileIncidentDialog
         key={fileKey}

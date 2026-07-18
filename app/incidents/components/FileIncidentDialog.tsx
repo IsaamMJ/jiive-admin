@@ -25,7 +25,8 @@ import {
   type IncidentVendor,
 } from "../types";
 import { SEVERITY_EXPLAINER } from "./IncidentBadges";
-import { datetimeLocalToIso, toDatetimeLocalValue } from "../lib/datetime";
+import { OrderPicker } from "./OrderPicker";
+import { datetimeLocalToIso, isoToDatetimeLocal, toDatetimeLocalValue } from "../lib/datetime";
 import { useIncidentMeta } from "../lib/useIncidentMeta";
 
 export interface FilePrefill {
@@ -34,6 +35,10 @@ export interface FilePrefill {
   category?: IncidentCategory;
   orderIds?: string[];
   title?: string;
+  /** From the AI draft — pre-selects the vendor control (falls back to category-derived). */
+  vendor?: IncidentVendor;
+  /** From the AI draft — ISO; pre-fills "when it happened" (falls back to now). */
+  occurredAt?: string;
 }
 
 interface Props {
@@ -49,16 +54,6 @@ const SEVERITY_TILE: Record<IncidentSeverity, string> = {
   S2: "data-[on=true]:border-orange-500 data-[on=true]:bg-orange-500/15 data-[on=true]:text-orange-300",
   S1: "data-[on=true]:border-red-500 data-[on=true]:bg-red-500/15 data-[on=true]:text-red-300",
 };
-
-/** "VL8E1FF6, VLB2CE67  VL1D9908" → ["VL8E1FF6","VLB2CE67","VL1D9908"], deduped. */
-function parseOrderIds(raw: string): string[] {
-  const seen = new Set<string>();
-  for (const t of raw.split(/[\s,;]+/)) {
-    const id = t.trim().toUpperCase();
-    if (id) seen.add(id);
-  }
-  return [...seen];
-}
 
 function deriveTitle(whatHappened: string): string {
   const firstLine = whatHappened.trim().split("\n")[0]?.trim() ?? "";
@@ -82,12 +77,21 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
   const [titleTouched, setTitleTouched] = useState(Boolean(prefill?.title));
   const [severity, setSeverity] = useState<IncidentSeverity | null>(prefill?.severity ?? null);
   const [category, setCategory] = useState<IncidentCategory | null>(prefill?.category ?? null);
-  const [orderIdsRaw, setOrderIdsRaw] = useState((prefill?.orderIds ?? []).join(", "));
+  const [orderIds, setOrderIds] = useState<string[]>(prefill?.orderIds ?? []);
   // Vendor is pre-selected from the category and only becomes "sticky" once the
   // operator actually touches it — so picking a category keeps re-suggesting,
-  // but an explicit override is never silently overwritten.
-  const [vendor, setVendor] = useState<IncidentVendor | null>(null);
-  const [occurredAt, setOccurredAt] = useState(() => toDatetimeLocalValue(new Date()));
+  // but an explicit override is never silently overwritten. When the AI draft
+  // supplies a vendor, it starts pre-selected (and thus sticky) instead.
+  const [vendor, setVendor] = useState<IncidentVendor | null>(prefill?.vendor ?? null);
+  // Defaults to now, but a draft that pulled a time out of the paragraph pre-fills
+  // it (falling back to now if that ISO doesn't parse). Freely back-datable either way.
+  const [occurredAt, setOccurredAt] = useState(() => {
+    if (prefill?.occurredAt) {
+      const local = isoToDatetimeLocal(prefill.occurredAt);
+      if (local) return local;
+    }
+    return toDatetimeLocalValue(new Date());
+  });
   // "Is this in the future?" is computed when the field changes, never during
   // render — reading the clock while rendering is impure and makes the output
   // depend on when React happened to re-render.
@@ -103,7 +107,6 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
     setOccurredInFuture(iso !== null && new Date(iso).getTime() > Date.now() + 60_000);
   }
 
-  const orderIds = parseOrderIds(orderIdsRaw);
   const occurredIso = datetimeLocalToIso(occurredAt);
   // An untouched vendor tracks the category. This is the field the Thyrocare
   // scorecard is counted on, and the server defaults an unsent one to "none" —
@@ -327,32 +330,13 @@ export function FileIncidentDialog({ open, onOpenChange, prefill, onFiled }: Pro
             />
           </div>
 
-          {/* 6 — Order IDs (multiple). */}
+          {/* 6 — Order IDs (searchable multi-select). */}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="inc-orders" className="flex items-center gap-1.5 text-sm font-medium">
+            <span className="flex items-center gap-1.5 text-sm font-medium">
               Order IDs
               <InfoTip label="One ID is enough — the server expands it into the customer, the slot, the phlebo's name and phone, the address, and every other order paid for in the same batch. Add more if several orders are involved." />
-            </label>
-            <Input
-              id="inc-orders"
-              value={orderIdsRaw}
-              onChange={(e) => setOrderIdsRaw(e.target.value)}
-              disabled={submitting}
-              placeholder="VL8E1FF6, VLB2CE67"
-              autoCapitalize="characters"
-              autoCorrect="off"
-              spellCheck={false}
-              className="font-mono text-base sm:text-sm"
-            />
-            {orderIds.length > 0 && (
-              <span className="text-xs text-muted-foreground">
-                {orderIds.length} order{orderIds.length !== 1 ? "s" : ""}:{" "}
-                <span className="font-mono">
-                  {orderIds.slice(0, 6).join(", ")}
-                  {orderIds.length > 6 ? ` +${orderIds.length - 6} more` : ""}
-                </span>
-              </span>
-            )}
+            </span>
+            <OrderPicker value={orderIds} onChange={setOrderIds} disabled={submitting} />
           </div>
         </div>
 
