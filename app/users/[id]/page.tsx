@@ -20,7 +20,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Sparkles } from "lucide-react";
+import { Sparkles, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 
@@ -73,6 +73,40 @@ interface UserDetail {
     ageDelta: string; status: string; createdAt: string;
     retestReminderOptIn: boolean; retestReminderSentAt: string | null;
   }[];
+}
+
+/**
+ * Render a message body with any URLs turned into clickable links that open in a
+ * new tab — so an operator taps to open a report/link instead of copy-pasting it
+ * out of the bubble. Non-URL text is untouched; a message with no URL is just text.
+ */
+function MessageBody({ content }: { content: string }) {
+  // Split on http(s) URLs, keeping the URLs as separate parts. Trailing quotes/
+  // brackets/punctuation are trimmed off the link so they don't 404.
+  const parts = content.split(/(https?:\/\/[^\s]+)/g);
+  return (
+    <p className="whitespace-pre-wrap break-words">
+      {parts.map((part, i) => {
+        if (!/^https?:\/\//.test(part)) return <span key={i}>{part}</span>;
+        const trailing = part.match(/[)\].,;:'"]+$/)?.[0] ?? "";
+        const href = trailing ? part.slice(0, -trailing.length) : part;
+        return (
+          <span key={i}>
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 break-all underline underline-offset-2 hover:opacity-80"
+            >
+              {href}
+              <ExternalLink size={12} className="shrink-0" />
+            </a>
+            {trailing}
+          </span>
+        );
+      })}
+    </p>
+  );
 }
 
 export default function UserDetailPage() {
@@ -230,7 +264,7 @@ export default function UserDetailPage() {
                         <span className="text-[10px] text-primary-foreground/70">{msg.templateName}</span>
                         {failed && <span className="text-[10px] text-red-300">· failed</span>}
                       </div>
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                      <MessageBody content={msg.content} />
                       <p className="text-xs mt-1 text-primary-foreground/60">
                         {new Date(msg.createdAt).toLocaleString()}
                       </p>
@@ -241,7 +275,7 @@ export default function UserDetailPage() {
               return (
                 <div key={i} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${msg.direction === "outbound" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
-                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                    <MessageBody content={msg.content} />
                     <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
                       {new Date(msg.createdAt).toLocaleString()}
                     </p>
