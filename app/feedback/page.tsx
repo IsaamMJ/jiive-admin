@@ -27,6 +27,7 @@ import {
   type CustomerFeedParams,
   type FeedbackChannel,
   type FeedbackCustomer,
+  type Sentiment,
 } from "./types";
 import { LogFeedbackDialog } from "./components/LogFeedbackDialog";
 import { ExportMenu } from "./components/ExportMenu";
@@ -51,6 +52,24 @@ function cleanPreview(text: string): string {
   // If the AI didn't use bullets, fall back to the raw text (tags already stripped).
   if (points.length === 0) return text.replace(/\s*\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
   return points.join(" · ");
+}
+
+/** At-a-glance mood dot: green happy · amber mixed · red unhappy. Null = not yet
+ *  organized, shown as a faint hollow dot so the row still aligns. */
+function SentimentDot({ sentiment }: { sentiment: Sentiment | null }) {
+  const map: Record<Sentiment, { cls: string; label: string }> = {
+    happy: { cls: "bg-emerald-500", label: "Happy" },
+    mixed: { cls: "bg-amber-500", label: "Mixed" },
+    unhappy: { cls: "bg-red-500", label: "Unhappy" },
+  };
+  const m = sentiment ? map[sentiment] : null;
+  return (
+    <span
+      title={m ? m.label : "Mood not gauged yet"}
+      aria-label={m ? m.label : "Mood not gauged yet"}
+      className={`h-2.5 w-2.5 shrink-0 rounded-full ${m ? m.cls : "border border-muted-foreground/40"}`}
+    />
+  );
 }
 
 export default function FeedbackPage() {
@@ -278,6 +297,7 @@ export default function FeedbackPage() {
                     className="flex w-full cursor-pointer flex-col gap-1.5 rounded-xl border border-border bg-card/60 p-3.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-4"
                   >
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                      <SentimentDot sentiment={c.sentiment} />
                       <span className="font-medium">{c.userName || "Unknown customer"}</span>
                       <span className="text-xs text-muted-foreground">
                         {formatDateTime(c.lastDumpAt)}

@@ -113,6 +113,9 @@ export interface LogFeedbackResponse {
 // note; `organizeStatus` says whether that preview is current, still organizing,
 // or failed.
 
+/** AI-derived mood for the customer's feedback. Null until organized once. */
+export type Sentiment = "happy" | "mixed" | "unhappy";
+
 export interface FeedbackCustomer {
   userId: string;
   userName: string;
@@ -122,6 +125,8 @@ export interface FeedbackCustomer {
   /** A short cut of the organized note. May be empty while organizeStatus === "pending". */
   organizedPreview: string;
   organizeStatus: OrganizeStatus;
+  /** happy | mixed | unhappy, or null until the note has been organized once. */
+  sentiment: Sentiment | null;
 }
 
 export interface CustomerFeedParams {
