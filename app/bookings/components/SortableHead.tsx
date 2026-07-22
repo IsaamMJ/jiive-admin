@@ -27,7 +27,7 @@ export function SortableHead({ label, sortKey, sort, onSort, align = "left" }: P
   const dir = active ? sort.dir : null;
 
   return (
-    <TableHead className={cn("p-0", align === "right" && "text-right")}>
+    <TableHead className={cn(align === "right" && "text-right")}>
       <button
         type="button"
         onClick={() => onSort(sortKey)}
@@ -38,9 +38,11 @@ export function SortableHead({ label, sortKey, sort, onSort, align = "left" }: P
         }
         // aria-sort belongs on the cell, but the button is what screen readers land
         // on — both are set so either reading order announces the state.
+        // Padding stays on the TableHead so the label lines up exactly with the
+        // column's cells; the button only borrows a hair of it back for the ring.
         className={cn(
-          "group inline-flex w-full items-center gap-1 px-3 py-2.5 text-left transition-colors",
-          "hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset rounded-sm",
+          "group -mx-1 inline-flex w-[calc(100%+0.5rem)] items-center gap-1 rounded-sm px-1 text-left transition-colors",
+          "hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           align === "right" && "justify-end",
           active ? "text-foreground" : "text-muted-foreground"
         )}
