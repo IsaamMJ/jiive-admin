@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AdminLayout } from "@/components/AdminLayout";
@@ -20,9 +20,21 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Sparkles, ExternalLink, Reply } from "lucide-react";
+import { Sparkles, ExternalLink, Reply, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { InfoTip } from "@/components/InfoTip";
+
+/**
+ * The chat keeps arriving after the page loaded. Poll while the operator is
+ * actually looking at the Conversations tab — not on every tab, and not while
+ * the browser tab is in the background (that's a request every 10s for a screen
+ * nobody is reading).
+ */
+const CONVO_POLL_MS = 10000;
+
+const LIVE_EXPLAINER =
+  "This chat refreshes itself every 10 seconds while you're on this tab, so new WhatsApp messages appear without you reloading. It pauses when you switch to another browser tab and catches up the moment you come back.";
 
 interface CreditTx {
   id: string;
@@ -171,6 +183,14 @@ export default function UserDetailPage() {
   const [data, setData] = useState<UserDetail | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const [activeTab, setActiveTab] = useState("profile");
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
+  const convoScrollRef = useRef<HTMLDivElement | null>(null);
+  /** Was the operator pinned to the bottom before this refresh? Decided pre-render. */
+  const wasAtBottomRef = useRef(true);
+  const convoCountRef = useRef(0);
+
   const [txs, setTxs] = useState<CreditTx[]>([]);
   const [txTotal, setTxTotal] = useState(0);
   const [txOffset, setTxOffset] = useState(0);
@@ -185,6 +205,62 @@ export default function UserDetailPage() {
   const loadUser = useCallback(() => {
     api.get(`/users/${id}`).then((r) => { setData(r.data); setLoading(false); });
   }, [id]);
+
+  /**
+   * A silent re-fetch: no skeleton, no toast, and a failure leaves the messages
+   * already on screen alone. A dropped poll is not worth blanking the chat — the
+   * next tick fixes it, and the "updated HH:MM:SS" stamp shows if it went stale.
+   */
+  const refreshUser = useCallback(async () => {
+    const el = convoScrollRef.current;
+    wasAtBottomRef.current = el
+      ? el.scrollHeight - el.scrollTop - el.clientHeight < 80
+      : true;
+    setRefreshing(true);
+    try {
+      const r = await api.get(`/users/${id}`);
+      setData(r.data);
+      setRefreshedAt(new Date());
+    } catch {
+      // Keep what's on screen; the next tick will try again.
+    } finally {
+      setRefreshing(false);
+    }
+  }, [id]);
+
+  // Poll only while the Conversations tab is open AND the browser tab is visible.
+  useEffect(() => {
+    if (activeTab !== "conversations") return;
+
+    const tick = () => {
+      if (document.visibilityState === "visible") refreshUser();
+    };
+    const timer = setInterval(tick, CONVO_POLL_MS);
+
+    // Coming back to the tab shouldn't mean waiting out the rest of the interval.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshUser();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [activeTab, refreshUser]);
+
+  const conversationCount = data?.conversations.length ?? 0;
+
+  // New messages land at the bottom. Follow them only if the operator was already
+  // there — yanking someone who scrolled up to read history is worse than stale.
+  useEffect(() => {
+    if (activeTab !== "conversations") return;
+    const el = convoScrollRef.current;
+    if (!el) return;
+    const grew = conversationCount > convoCountRef.current;
+    convoCountRef.current = conversationCount;
+    if (grew && wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [activeTab, conversationCount]);
 
   const loadTxPage = useCallback((offset: number) => {
     setTxLoading(true);
@@ -259,7 +335,7 @@ export default function UserDetailPage() {
 
   return (
     <AdminLayout title={user.name ?? user.whatsappPhone}>
-      <Tabs defaultValue="profile" className="flex flex-col gap-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col gap-4">
         <TabsList className="w-fit">
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="conversations">Conversations ({conversations.length})</TabsTrigger>
@@ -302,7 +378,30 @@ export default function UserDetailPage() {
 
         {/* Conversations */}
         <TabsContent value="conversations">
-          <div className="flex flex-col gap-2 max-h-[600px] overflow-y-auto pr-1">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+              <span>
+                Live
+                {refreshedAt && ` · updated ${refreshedAt.toLocaleTimeString()}`}
+              </span>
+              <InfoTip label={LIVE_EXPLAINER} />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              onClick={refreshUser}
+              disabled={refreshing}
+            >
+              <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+              {refreshing ? "Refreshing…" : "Refresh"}
+            </Button>
+          </div>
+          <div ref={convoScrollRef} className="flex flex-col gap-2 max-h-[600px] overflow-y-auto pr-1">
             {conversations.length === 0 ? (
               <p className="text-muted-foreground text-sm">No conversations.</p>
             ) : conversations.map((msg, i) => {
