@@ -49,6 +49,52 @@ aren't top-level on the booking:
 Sort on those nested values. If you'd rather name them `user.whatsappPhone` / `address.city`, that's
 fine — tell us the strings and we'll change one line (they live in one map, `app/bookings/lib/sort.ts`).
 
+---
+
+# ✅ SHIPPED 2026-07-22 — and one follow-up
+
+Sorting is live and verified from the browser against all 396 dev bookings: global order holds across
+all four page boundaries, re-sorting resets to page 1, amount sorts numerically, `thyrocareOrderId`
+descending puts real IDs first, and bad params 400 with the supported list. Flat field names retained.
+
+## Follow-up: `cancelledBy` — yes please, add the filter
+
+You asked. Confirmed live that it's currently accepted-and-ignored, which is worse than absent —
+these four all return the identical 13 rows with `cancelledBy` values `user`, `system`, `thyrocare`
+and `null` mixed together:
+
+```
+GET /bookings?limit=200&status=cancelled                        → total 13
+GET /bookings?limit=200&status=cancelled&cancelledBy=user       → total 13   ← same rows
+GET /bookings?limit=200&status=cancelled&cancelledBy=thyrocare  → total 13   ← same rows
+GET /bookings?limit=200&status=cancelled&cancelledBy=null       → total 13   ← same rows
+```
+
+The admin UI had a "Cancellation source" dropdown wired to that param, so it had been silently doing
+nothing. It now filters client-side as a stopgap and warns when the cancelled set spans pages.
+
+**The outcome we need:** `cancelledBy` filters the result the way `status` does, so "how many did the
+lab cancel on us this month" is answerable. That number feeds the Thyrocare scorecard — it's the
+difference between a customer changing their mind and the vendor failing to show up.
+
+- `cancelledBy=user` / `=thyrocare` / `=system` → exact match.
+- Some way to ask for "no value" — whatever spelling you prefer, just tell us the string.
+- `admin:<uuid>` cancellations exist in the data; a prefix match on `admin` would be useful but isn't
+  required.
+- Consistent with `sortBy`: an unsupported value should **400**, not be ignored. That's what hid this
+  one for as long as it did.
+
+## The two spec corrections — both accepted
+
+`city` / `appointmentDate` / `appointmentTime` being NOT NULL is good news; nulls-last only ever
+mattered for `thyrocareOrderId` and that's confirmed working.
+
+## Case-insensitive sorting — leave it
+
+Not worth forcing. Patient names come from WhatsApp onboarding and are effectively always
+capitalised (0 lowercase-initial names in 396 dev bookings). If a lowercase name ever shows up
+misfiled, we'll come back to it — not worth an index change on a hypothetical.
+
 ## Please confirm when done
 
 Reply with the exact param names/values you shipped. We flip `SERVER_SORT` in
