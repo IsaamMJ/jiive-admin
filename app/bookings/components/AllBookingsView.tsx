@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, Fragment } from "react";
+import { useEffect, useState, Fragment } from "react";
 import { ChevronDown } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -18,10 +18,7 @@ import { BookingExpandedPanel } from "./BookingExpandedPanel";
 import { normalizeBookings } from "../lib/normalizeBooking";
 import { cn } from "@/lib/utils";
 import { SortableHead } from "./SortableHead";
-import {
-  SERVER_SORT, SORT_FIELD, nextSort, sortBookings,
-  type SortKey, type SortState,
-} from "../lib/sort";
+import { SORT_FIELD, nextSort, type SortKey, type SortState } from "../lib/sort";
 
 const PAGE_SIZE = 50;
 const STATUS_OPTIONS = ["all", "pending_payment", "confirmed", "cancelled", "completed"];
@@ -49,9 +46,7 @@ export function AllBookingsView() {
     if (s === "cancelled" && src !== "all") {
       params.set("cancelledBy", src === "unknown" ? "null" : src);
     }
-    // Only ever send these once the backend accepts them — it 400s on an unknown
-    // query param rather than ignoring it, which empties the whole page.
-    if (SERVER_SORT && srt) {
+    if (srt) {
       params.set("sortBy", SORT_FIELD[srt.key]);
       params.set("sortDir", srt.dir);
     }
@@ -69,18 +64,8 @@ export function AllBookingsView() {
     setExpandedId(null);
     // Re-sorting reshuffles the whole list, so page 3 of the old order is
     // meaningless in the new one — go back to the start.
-    if (SERVER_SORT) setOffset(0);
+    setOffset(0);
   };
-
-  /** Server-sorted rows arrive in order; otherwise sort the page we hold. */
-  const rows = useMemo(
-    () => (SERVER_SORT ? bookings : sortBookings(bookings, sort)),
-    [bookings, sort]
-  );
-
-  // Honest about scope: with more than one page, a client-side sort only orders
-  // what's on screen. Say so rather than let it look like a whole-list sort.
-  const partialSortWarning = !SERVER_SORT && sort !== null && total > PAGE_SIZE;
 
   const handleStatus = (v: string | null) => {
     setStatus(v ?? "all");
@@ -138,13 +123,6 @@ export function AllBookingsView() {
         )}
       </div>
 
-      {partialSortWarning && (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          Sorting these {rows.length} rows only — not all {total}. Use the filters to narrow
-          the list, or page through it.
-        </p>
-      )}
-
       {loading ? (
         <div className="flex flex-col gap-2">
           {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-10" />)}
@@ -167,7 +145,7 @@ export function AllBookingsView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((b) => {
+              {bookings.map((b) => {
                 const expanded = expandedId === b.id;
                 return (
                   <Fragment key={b.id}>
@@ -208,7 +186,7 @@ export function AllBookingsView() {
                   </Fragment>
                 );
               })}
-              {rows.length === 0 && (
+              {bookings.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={10} className="text-center text-muted-foreground py-8">No bookings found</TableCell>
                 </TableRow>

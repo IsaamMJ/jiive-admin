@@ -1,23 +1,19 @@
-import type { Booking } from "./types";
-
 /**
  * Column sorting for the All-bookings table.
  *
- * ── Where the sort actually happens ──────────────────────────────────────────
- * The list is paginated (50/page), so sorting only tells the truth if the SERVER
- * does it — a client-side sort reorders the rows you can see and quietly leaves
- * the rest of the list out of order.
+ * The sort happens SERVER-SIDE — `GET /bookings` takes `sortBy` + `sortDir` and
+ * orders the whole result before paginating it. That's the only version that tells
+ * the truth: the list pages at 50, so sorting in the browser would reorder the rows
+ * on screen and quietly leave the rest of the list alone.
  *
- * `SERVER_SORT` is that switch. It is OFF until the backend accepts `sortBy` +
- * `sortDir` on `GET /bookings` — it 400s on unknown query params, so turning this
- * on early takes the whole page down rather than degrading. Spec handed over in
- * `docs/handoff-backend-bookings-sort.md`.
- *
- * While it is OFF the table sorts the loaded page client-side, and the UI says so
- * out loud whenever there is more than one page. Flipping this one constant to
- * `true` is the entire upgrade.
+ * Backend guarantees we rely on (verified live against 396 bookings):
+ *   - sorted before pagination, so limit/offset page through the sorted result
+ *   - a stable total order (ties break on id) — paging can't repeat or skip a row
+ *   - nulls last in both directions
+ *   - both params omitted → the default order, unchanged
+ *   - an unsupported sortBy/sortDir 400s listing the supported values, rather than
+ *     silently returning an unsorted list that looks sorted
  */
-export const SERVER_SORT = false;
 
 export type SortKey =
   | "patient" | "phone" | "test" | "date" | "time"
@@ -31,8 +27,9 @@ export interface SortState {
 }
 
 /**
- * Frontend column → the field name the backend sorts on. Kept in one place so a
- * rename on their side is a one-line change here, not a hunt through the table.
+ * Frontend column → the `sortBy` value the API takes. Deliberately FLAT names:
+ * phone and city are nested on the response, but the backend maps them itself so
+ * the API doesn't expose its relation layout. One place to change if they rename.
  */
 export const SORT_FIELD: Record<SortKey, string> = {
   patient: "patientName",
@@ -45,40 +42,6 @@ export const SORT_FIELD: Record<SortKey, string> = {
   city: "city",
   thyrocareId: "thyrocareOrderId",
 };
-
-/** The value each column sorts on. `null` means "no value" and always sinks to the bottom. */
-function sortValue(b: Booking, key: SortKey): string | number | null {
-  switch (key) {
-    case "patient": return b.patientName?.toLowerCase() ?? null;
-    case "phone": return b.user?.whatsappPhone ?? null;
-    case "test": return b.testType?.toLowerCase() ?? null;
-    case "date": return b.appointmentDate || null;      // YYYY-MM-DD sorts lexically
-    case "time": return b.appointmentTime || null;      // HH:MM sorts lexically
-    case "status": return b.status?.toLowerCase() ?? null;
-    case "amount": return typeof b.amount === "number" ? b.amount : null;
-    case "city": return b.address?.city?.toLowerCase() ?? null;
-    case "thyrocareId": return b.thyrocareOrderId || null;
-  }
-}
-
-/**
- * Sort a page of bookings. Rows with no value for the column stay at the bottom in
- * BOTH directions — a booking with no Thyrocare ID isn't "the smallest ID", it has
- * none, and burying the real IDs under a wall of dashes helps nobody.
- */
-export function sortBookings(bookings: Booking[], sort: SortState | null): Booking[] {
-  if (!sort) return bookings;
-  const factor = sort.dir === "asc" ? 1 : -1;
-  return [...bookings].sort((x, y) => {
-    const a = sortValue(x, sort.key);
-    const b = sortValue(y, sort.key);
-    if (a === null && b === null) return 0;
-    if (a === null) return 1;
-    if (b === null) return -1;
-    if (typeof a === "number" && typeof b === "number") return (a - b) * factor;
-    return String(a).localeCompare(String(b)) * factor;
-  });
-}
 
 /**
  * Click cycle: unsorted → ascending → descending → unsorted. The third click
