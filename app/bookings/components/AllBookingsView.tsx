@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, Fragment } from "react";
+import { useEffect, useState, useMemo, Fragment } from "react";
 import { ChevronDown } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -17,6 +17,11 @@ import { CancellationBadge } from "./CancellationBadge";
 import { BookingExpandedPanel } from "./BookingExpandedPanel";
 import { normalizeBookings } from "../lib/normalizeBooking";
 import { cn } from "@/lib/utils";
+import { SortableHead } from "./SortableHead";
+import {
+  SERVER_SORT, SORT_FIELD, nextSort, sortBookings,
+  type SortKey, type SortState,
+} from "../lib/sort";
 
 const PAGE_SIZE = 50;
 const STATUS_OPTIONS = ["all", "pending_payment", "confirmed", "cancelled", "completed"];
@@ -35,13 +40,20 @@ export function AllBookingsView() {
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState | null>(null);
 
-  const fetch = (s: string, src: string, o: number) => {
+  const fetch = (s: string, src: string, o: number, srt: SortState | null) => {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(o) });
     if (s !== "all") params.set("status", s);
     if (s === "cancelled" && src !== "all") {
       params.set("cancelledBy", src === "unknown" ? "null" : src);
+    }
+    // Only ever send these once the backend accepts them — it 400s on an unknown
+    // query param rather than ignoring it, which empties the whole page.
+    if (SERVER_SORT && srt) {
+      params.set("sortBy", SORT_FIELD[srt.key]);
+      params.set("sortDir", srt.dir);
     }
     api.get(`/bookings?${params}`).then((r) => {
       setBookings(normalizeBookings(r.data.bookings));
@@ -50,7 +62,25 @@ export function AllBookingsView() {
     });
   };
 
-  useEffect(() => { fetch(status, cancelSource, offset); }, [status, cancelSource, offset]);
+  useEffect(() => { fetch(status, cancelSource, offset, sort); }, [status, cancelSource, offset, sort]);
+
+  const handleSort = (key: SortKey) => {
+    setSort(nextSort(sort, key));
+    setExpandedId(null);
+    // Re-sorting reshuffles the whole list, so page 3 of the old order is
+    // meaningless in the new one — go back to the start.
+    if (SERVER_SORT) setOffset(0);
+  };
+
+  /** Server-sorted rows arrive in order; otherwise sort the page we hold. */
+  const rows = useMemo(
+    () => (SERVER_SORT ? bookings : sortBookings(bookings, sort)),
+    [bookings, sort]
+  );
+
+  // Honest about scope: with more than one page, a client-side sort only orders
+  // what's on screen. Say so rather than let it look like a whole-list sort.
+  const partialSortWarning = !SERVER_SORT && sort !== null && total > PAGE_SIZE;
 
   const handleStatus = (v: string | null) => {
     setStatus(v ?? "all");
@@ -95,7 +125,25 @@ export function AllBookingsView() {
         )}
 
         <span className="text-sm text-muted-foreground">{total} total</span>
+
+        {sort !== null && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-muted-foreground"
+            onClick={() => { setSort(null); setExpandedId(null); }}
+          >
+            Clear sort
+          </Button>
+        )}
       </div>
+
+      {partialSortWarning && (
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+          Sorting these {rows.length} rows only — not all {total}. Use the filters to narrow
+          the list, or page through it.
+        </p>
+      )}
 
       {loading ? (
         <div className="flex flex-col gap-2">
@@ -107,19 +155,19 @@ export function AllBookingsView() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-8"></TableHead>
-                <TableHead>Patient</TableHead>
-                <TableHead>Phone</TableHead>
-                <TableHead>Test</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Time</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>City</TableHead>
-                <TableHead>Thyrocare ID</TableHead>
+                <SortableHead label="Patient" sortKey="patient" sort={sort} onSort={handleSort} />
+                <SortableHead label="Phone" sortKey="phone" sort={sort} onSort={handleSort} />
+                <SortableHead label="Test" sortKey="test" sort={sort} onSort={handleSort} />
+                <SortableHead label="Date" sortKey="date" sort={sort} onSort={handleSort} />
+                <SortableHead label="Time" sortKey="time" sort={sort} onSort={handleSort} />
+                <SortableHead label="Status" sortKey="status" sort={sort} onSort={handleSort} />
+                <SortableHead label="Amount" sortKey="amount" sort={sort} onSort={handleSort} align="right" />
+                <SortableHead label="City" sortKey="city" sort={sort} onSort={handleSort} />
+                <SortableHead label="Thyrocare ID" sortKey="thyrocareId" sort={sort} onSort={handleSort} />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {bookings.map((b) => {
+              {rows.map((b) => {
                 const expanded = expandedId === b.id;
                 return (
                   <Fragment key={b.id}>
@@ -160,7 +208,7 @@ export function AllBookingsView() {
                   </Fragment>
                 );
               })}
-              {bookings.length === 0 && (
+              {rows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={10} className="text-center text-muted-foreground py-8">No bookings found</TableCell>
                 </TableRow>
