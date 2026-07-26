@@ -4,10 +4,12 @@ export const dynamic = "force-dynamic";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, RefreshCw, CalendarClock, XCircle } from "lucide-react";
+import { Loader2, RefreshCw, CalendarClock, XCircle, AlertTriangle, ChevronDown } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -52,7 +54,19 @@ function groupByBatch(bookings: StuckBooking[]): Group[] {
 type Confirm =
   | { type: "retry"; booking: StuckBooking }
   | { type: "cancel"; booking: StuckBooking }
+  | { type: "manual"; bookingId: string }
   | null;
+
+/** The manual-order endpoint's response (the old standalone Thyrocare page's shape). */
+interface ManualOrderResult {
+  success: boolean;
+  thyrocareOrderId?: string;
+  thyrocareLeadId?: string;
+  error?: string;
+  details?: unknown;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function StuckBookingsPage() {
   const [bookings, setBookings] = useState<StuckBooking[]>([]);
@@ -63,6 +77,14 @@ export default function StuckBookingsPage() {
   const [reschedule, setReschedule] = useState<StuckBooking | null>(null);
   const confirmRef = useRef<Confirm>(null);
   confirmRef.current = confirm;
+
+  // Manual order-by-ID tool (the old standalone Thyrocare page, folded in here
+  // behind a caution gate). Collapsed by default — it's the escape hatch, not
+  // the everyday path.
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualBookingId, setManualBookingId] = useState("");
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualResult, setManualResult] = useState<ManualOrderResult | null>(null);
 
   const load = useCallback((opts?: { silent?: boolean }) => {
     if (opts?.silent) setRefreshing(true);
@@ -125,12 +147,32 @@ export default function StuckBookingsPage() {
     }
   };
 
+  const doManualOrder = async (bookingId: string) => {
+    setManualLoading(true);
+    setManualResult(null);
+    try {
+      const { data } = await api.post<ManualOrderResult>("/thyrocare/test-order", { bookingId });
+      setManualResult(data);
+      if (data.success) toast.success(`Order placed (${data.thyrocareOrderId ?? "ok"})`);
+      else toast.error(data.error ?? "Order failed");
+      // A newly-placed order may clear a stuck row; refresh the list.
+      load({ silent: true });
+    } catch (err: unknown) {
+      const data = (err as { response?: { data?: ManualOrderResult } })?.response?.data;
+      setManualResult(data ?? { success: false, error: "Network error" });
+      toast.error(data?.error ?? "Order failed");
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
   const runConfirm = async () => {
     const c = confirm;
     if (!c) return;
     setConfirm(null);
     if (c.type === "retry") await doRetry(c.booking);
-    else await doCancel(c.booking);
+    else if (c.type === "cancel") await doCancel(c.booking);
+    else await doManualOrder(c.bookingId);
   };
 
   const groups = groupByBatch(bookings);
@@ -196,6 +238,90 @@ export default function StuckBookingsPage() {
             </Table>
           </div>
         )}
+
+        {/* Manual order-by-ID — the escape hatch, gated behind a caution panel */}
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5">
+          <button
+            type="button"
+            onClick={() => setManualOpen((o) => !o)}
+            className="flex w-full items-center gap-2 px-4 py-3 text-left"
+          >
+            <AlertTriangle size={15} className="shrink-0 text-amber-500" />
+            <span className="text-sm font-medium">Manual order by booking ID</span>
+            <span className="hidden text-xs text-muted-foreground sm:inline">
+              — advanced escape hatch, use only when a booking isn&apos;t listed above
+            </span>
+            <ChevronDown size={15} className={cn("ml-auto shrink-0 text-muted-foreground transition-transform", manualOpen && "rotate-180")} />
+          </button>
+
+          {manualOpen && (
+            <div className="flex flex-col gap-3 border-t border-amber-500/20 px-4 py-4">
+              <div className="space-y-1.5 text-xs text-muted-foreground">
+                <p>
+                  <span className="font-medium text-foreground">What it does:</span> places a{" "}
+                  <span className="font-medium text-foreground">real</span> Thyrocare order for a booking by
+                  its ID, bypassing the Razorpay payment step. Same action as{" "}
+                  <span className="font-medium text-foreground">Retry</span> above, but without the safety of
+                  seeing the booking, its history, or why it&apos;s stuck first.
+                </p>
+                <p className="font-medium text-foreground">When to use it:</p>
+                <ul className="list-disc space-y-0.5 pl-4">
+                  <li>A booking needs an order but does <span className="font-medium text-foreground">not</span> appear in the list above (the reconciliation cron hasn&apos;t flagged it, or its state is unusual) and you have the exact booking ID from support or logs.</li>
+                  <li>Backend or support explicitly asked you to force-place a specific order.</li>
+                </ul>
+                <p>
+                  <span className="font-medium text-foreground">When NOT to:</span> if the booking is already
+                  in the list above, use its Retry button — it&apos;s safer. Never paste an ID you&apos;re
+                  unsure of: a wrong ID places a real, unpaid order and dispatches a phlebotomist.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="manualBookingId" className="text-xs">Booking ID (UUID)</Label>
+                <Input
+                  id="manualBookingId"
+                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  value={manualBookingId}
+                  onChange={(e) => setManualBookingId(e.target.value)}
+                  className="max-w-md font-mono text-sm"
+                />
+              </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                className="self-start border-amber-500/40 hover:bg-amber-500/10"
+                disabled={!UUID_RE.test(manualBookingId.trim()) || manualLoading}
+                onClick={() => setConfirm({ type: "manual", bookingId: manualBookingId.trim() })}
+              >
+                {manualLoading ? <Loader2 size={13} className="animate-spin" /> : <AlertTriangle size={13} />}
+                {manualLoading ? "Placing…" : "Place order"}
+              </Button>
+
+              {manualResult && (
+                <div className={cn("rounded-lg border p-3 text-sm", manualResult.success ? "border-green-500/20 bg-green-500/10" : "border-red-500/20 bg-red-500/10")}>
+                  {manualResult.success ? (
+                    <div className="flex flex-col gap-0.5">
+                      <p className="font-semibold text-green-400">Order placed</p>
+                      <p className="text-xs text-muted-foreground">Order ID: <span className="font-mono">{manualResult.thyrocareOrderId}</span></p>
+                      <p className="text-xs text-muted-foreground">Lead ID: <span className="font-mono">{manualResult.thyrocareLeadId}</span></p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1.5">
+                      <p className="font-semibold text-red-400">Order failed</p>
+                      <p className="text-xs text-muted-foreground">{manualResult.error}</p>
+                      {manualResult.details != null && (
+                        <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-xs">
+                          {JSON.stringify(manualResult.details, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Reschedule slot picker */}
@@ -212,17 +338,25 @@ export default function StuckBookingsPage() {
             <>
               <DialogHeader>
                 <DialogTitle>
-                  {confirm.type === "retry" ? "Retry placement?" : "Cancel booking?"}
+                  {confirm.type === "retry" ? "Retry placement?"
+                    : confirm.type === "cancel" ? "Cancel booking?"
+                    : "Place a manual order?"}
                 </DialogTitle>
                 <DialogDescription>
                   {confirm.type === "retry" ? (
                     <>Places a real Thyrocare order for{" "}
                       <span className="font-medium text-foreground">{confirm.booking.patientName}</span>{" "}
                       and debits the prepaid wallet. Only do this after the wallet has balance.</>
-                  ) : (
+                  ) : confirm.type === "cancel" ? (
                     <>Cancels{" "}
                       <span className="font-medium text-foreground">{confirm.booking.patientName}</span>’s{" "}
                       booking and stops the reconciliation cron from retrying it. This cannot be undone here.</>
+                  ) : (
+                    <>Places a <span className="font-medium text-foreground">real</span> Thyrocare order for
+                      booking{" "}
+                      <span className="font-mono text-foreground">{confirm.bookingId.slice(0, 8)}…</span>,
+                      bypassing payment. Double-check this is the right booking — a wrong ID dispatches a
+                      phlebotomist for an unpaid order.</>
                   )}
                 </DialogDescription>
               </DialogHeader>
@@ -232,7 +366,9 @@ export default function StuckBookingsPage() {
                   variant={confirm.type === "cancel" ? "destructive" : "default"}
                   onClick={runConfirm}
                 >
-                  {confirm.type === "retry" ? "Place order" : "Cancel booking"}
+                  {confirm.type === "retry" ? "Place order"
+                    : confirm.type === "cancel" ? "Cancel booking"
+                    : "Place order"}
                 </Button>
               </DialogFooter>
             </>

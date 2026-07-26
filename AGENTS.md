@@ -38,7 +38,9 @@ Top-level directories under `app/` (Next.js App Router) and their owners:
 - `app/infra/` — infra widgets (AI/knowledge service health)
 - `app/usage/` — AI cost + reliability metrics
 - `app/debug/` — internal debug tooling
-- `app/thyrocare/` — manual Thyrocare test-order trigger
+- `app/stuck-bookings/` — paid-but-unordered recovery (Retry / Reschedule / Cancel) plus a
+  cautioned "manual order by booking ID" escape hatch (folded in from the old `app/thyrocare/`
+  page, which was removed as a redundant, unguarded duplicate)
 - `app/login/` — auth entry point
 - `components/` — shared UI (AdminLayout, Sidebar, TopBar, StatusBadge, ui/*)
 - `lib/` — `api.ts` (axios client + 401 interceptor), `auth.ts` (token storage), `utils.ts`
