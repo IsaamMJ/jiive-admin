@@ -22,11 +22,15 @@ import { SORT_FIELD, nextSort, type SortKey, type SortState } from "../lib/sort"
 
 const PAGE_SIZE = 50;
 const STATUS_OPTIONS = ["all", "pending_payment", "confirmed", "cancelled", "completed"];
+// The backend's cancelledBy filter values (verified live). `admin` matches any
+// admin actor (stored as admin:<uuid>). No "unknown" — every cancellation now
+// carries a real source.
 const CANCEL_SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "All sources" },
   { value: "user", label: "User-cancelled" },
   { value: "thyrocare", label: "Lab-cancelled" },
-  { value: "unknown", label: "Unknown source" },
+  { value: "system", label: "System" },
+  { value: "admin", label: "Admin" },
 ];
 
 export function AllBookingsView() {
@@ -43,12 +47,9 @@ export function AllBookingsView() {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(o) });
     if (s !== "all") params.set("status", s);
-    // NOTE: no `cancelledBy` param. The endpoint doesn't have that filter — it
-    // returns the field but ignores it as a query param (confirmed live: user /
-    // thyrocare / null all return the same rows). We filtered on it for a while
-    // and the dropdown was quietly doing nothing. Until the backend adds it, the
-    // filtering happens below, client-side, and says so when it can't see the
-    // whole set. See docs/handoff-backend-bookings-sort.md.
+    // Cancellation source now filters server-side (across the whole list, not just
+    // the page). Only meaningful within cancelled, so it's scoped to that status.
+    if (s === "cancelled" && src !== "all") params.set("cancelledBy", src);
     if (srt) {
       params.set("sortBy", SORT_FIELD[srt.key]);
       params.set("sortDir", srt.dir);
@@ -69,22 +70,6 @@ export function AllBookingsView() {
     // meaningless in the new one — go back to the start.
     setOffset(0);
   };
-
-  /**
-   * Cancellation-source filtering, done here because the API doesn't offer it.
-   * `unknown` means the field is genuinely absent — not "some other value", so
-   * `system` and `admin:<uuid>` cancellations deliberately match none of the three.
-   */
-  const rows =
-    status === "cancelled" && cancelSource !== "all"
-      ? bookings.filter((b) =>
-          cancelSource === "unknown" ? !b.cancelledBy : b.cancelledBy === cancelSource
-        )
-      : bookings;
-
-  // One page at a time is all we can filter. If the cancelled set spans pages,
-  // say so rather than let a partial answer look like the whole one.
-  const partialFilter = status === "cancelled" && cancelSource !== "all" && total > PAGE_SIZE;
 
   const handleStatus = (v: string | null) => {
     setStatus(v ?? "all");
@@ -128,11 +113,7 @@ export function AllBookingsView() {
           </Select>
         )}
 
-        <span className="text-sm text-muted-foreground">
-          {status === "cancelled" && cancelSource !== "all"
-            ? `${rows.length} of ${total}`
-            : `${total} total`}
-        </span>
+        <span className="text-sm text-muted-foreground">{total} total</span>
 
         {sort !== null && (
           <Button
@@ -145,13 +126,6 @@ export function AllBookingsView() {
           </Button>
         )}
       </div>
-
-      {partialFilter && (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          Filtering this page of {bookings.length} only — there are {total} cancelled bookings
-          across several pages.
-        </p>
-      )}
 
       {loading ? (
         <div className="flex flex-col gap-2">
@@ -175,7 +149,7 @@ export function AllBookingsView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((b) => {
+              {bookings.map((b) => {
                 const expanded = expandedId === b.id;
                 return (
                   <Fragment key={b.id}>
@@ -216,7 +190,7 @@ export function AllBookingsView() {
                   </Fragment>
                 );
               })}
-              {rows.length === 0 && (
+              {bookings.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={10} className="text-center text-muted-foreground py-8">No bookings found</TableCell>
                 </TableRow>
