@@ -188,29 +188,41 @@ export default function PlaygroundPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Deep-link: ?userId= → pre-load patient ───────────────────────────────
+  // ── Deep-link: ?patientId= (one person) or ?userId= (an account) ──────────
   // Runs once on mount. Does not interfere with handleNewChat / handleOpenConversation
   // because it fires before any conversation is created (transcript is empty on mount).
+  //
+  // ?patientId= is the precise one — it loads exactly one FamilyMember's context
+  // (from the Results tab's per-patient "Ask AI"). ?userId= is the account-level
+  // link (the profile button); the backend resolves that to a patient. When both
+  // are present, patientId wins — it's the more specific target.
 
   useEffect(() => {
     if (deepLinkConsumedRef.current) return;
     // Read directly from window.location — avoids useSearchParams Suspense requirement
     // while still running only client-side (this is a "use client" component).
-    const userId = new URLSearchParams(window.location.search).get("userId");
-    if (!userId) return;
+    const qs = new URLSearchParams(window.location.search);
+    const patientId = qs.get("patientId");
+    const userId = qs.get("userId");
+    if (!patientId && !userId) return;
     deepLinkConsumedRef.current = true;
-    // Strip param immediately so a refresh or sidebar open doesn't re-trigger.
+    // Strip params immediately so a refresh or sidebar open doesn't re-trigger.
     router.replace("/playground");
     setDeepLinkPending(true);
+
+    const path = patientId
+      ? `/llm-playground/patients/by-patient/${patientId}`
+      : `/llm-playground/patients/by-user/${userId}`;
+
     api
-      .get<{ id: string; label: string; deidentified: object }>(`/llm-playground/patients/by-user/${userId}`)
+      .get<{ id: string; label: string; deidentified: object }>(path)
       .then((resp) => {
         setActivePatientId(resp.data.id);
         activePatientIdRef.current = resp.data.id;
         setDeepLinkPending(false);
       })
       .catch(() => {
-        toast.info("No patient record available for this user in the playground.");
+        toast.info("No patient record available for this link in the playground.");
         setDeepLinkPending(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps

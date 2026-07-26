@@ -72,6 +72,29 @@ Is each de-identified patient keyed to a **FamilyMember id** (so the split is
 clean and stable), the same id-based link you used for the results fix? If so this
 is the same join, applied here.
 
+## Two more things we need for the per-patient "Ask AI" button
+
+We're adding an **"Ask AI about this patient"** button on the Results tab, grouped
+per person (so Nisha's three tests get ONE button that loads all three, never one
+isolated result, never blended with Aisha). For that button to target the right
+person we need:
+
+1. **`patientId` on each result** — the FamilyMember id — in both `GET /users/:id`
+   `results[]` and `GET /results`. It's the same id-based link behind the
+   `patientName`/`relationship` you just shipped; we just need the id itself
+   exposed so we can deep-link to that one person.
+
+2. **A per-patient context endpoint** to deep-link into, e.g.:
+   ```
+   GET /llm-playground/patients/by-patient/:patientId
+   → { id, label, deidentified }   // only that ONE person's history
+   ```
+   Same shape as `by-user` returns for a single patient today — just keyed by the
+   FamilyMember id instead of the account, and never merged.
+
+With both, the button links to `/playground?patientId=<patientId>` and the AI gets
+exactly that person's full de-identified history.
+
 ## Frontend plan (waiting on the above)
 
 Once `by-user` returns a list:
@@ -79,6 +102,7 @@ Once `by-user` returns a list:
 - Two or more → show a picker ("this account has N patients: <label>, <label> —
   which one?") and load only the chosen person's context.
 
-No frontend change is possible until the endpoint stops merging and returns the
-per-member list. Confirm the response shape (the `{ patients: [...] }` above, or
-your preferred shape) and we build the picker to match.
+The Results-tab per-patient button (gated on `patientId` being present) and the
+`?patientId=` playground deep-link are already built on our side — they render and
+work the moment the two items above ship. Confirm the response shapes and we're
+done.

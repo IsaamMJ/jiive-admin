@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AdminLayout } from "@/components/AdminLayout";
@@ -220,6 +220,8 @@ interface UserDetail {
     // report with no booking yet (shows the account-holder name, no relationship).
     patientName?: string | null;
     relationship?: string | null;
+    /** FamilyMember id — lets "Ask AI" deep-link to THIS person's context. */
+    patientId?: string | null;
   }[];
 }
 
@@ -250,6 +252,29 @@ function PatientCell({
       )}
     </span>
   );
+}
+
+type ResultRow = UserDetail["results"][number];
+
+/**
+ * Group a person's results under one heading. One account is a household, so
+ * results belong to PEOPLE — a customer with three tests is one patient, not
+ * three rows to scan independently. Grouping keys on the FamilyMember id when we
+ * have it (stable), else the name, else a single account bucket for legacy rows
+ * that carry no subject yet.
+ */
+function groupResultsByPatient(results: ResultRow[]) {
+  const groups = new Map<string, { key: string; name?: string | null; relationship?: string | null; patientId?: string | null; rows: ResultRow[] }>();
+  for (const r of results) {
+    const key = r.patientId || r.patientName || "__account__";
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, name: r.patientName, relationship: r.relationship, patientId: r.patientId, rows: [] };
+      groups.set(key, g);
+    }
+    g.rows.push(r);
+  }
+  return [...groups.values()];
 }
 
 /**
@@ -633,43 +658,64 @@ export default function UserDetailPage() {
               <TableBody>
                 {results.length === 0 ? (
                   <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
-                ) : results.map((r) => (
-                  <TableRow key={r.id} className="cursor-pointer hover:bg-accent">
-                    <TableCell>
-                      <PatientCell name={r.patientName} relationship={r.relationship} accountHolder={user.name ?? user.whatsappPhone} />
-                    </TableCell>
-                    <TableCell>
-                      <Link href={`/results/${r.id}`} className="capitalize hover:underline text-primary">
-                        {r.testType.replace(/_/g, " ")}
-                      </Link>
-                    </TableCell>
-                    <TableCell>{r.calculatedAge ?? "—"}</TableCell>
-                    <TableCell>{r.chronologicalAge ?? "—"}</TableCell>
-                    <TableCell className={parseFloat(r.ageDelta) < 0 ? "text-green-400" : "text-red-400"}>{r.ageDelta ?? "—"}</TableCell>
-                    <TableCell><StatusBadge status={r.status} /></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleDateString()}</TableCell>
-                    <TableCell className="text-xs">
-                      {r.retestReminderSentAt ? (
-                        <span className="text-green-400">Sent {new Date(r.retestReminderSentAt).toLocaleDateString()}</span>
-                      ) : r.retestReminderOptIn ? (
-                        <span className="text-blue-400">Opted in</span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                      {r.reportUrl ? (
-                        <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" className="inline-flex">
-                          <Button variant="outline" size="sm">
-                            <ExternalLink size={13} className="mr-1.5" />
-                            Open report
-                          </Button>
-                        </a>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">No link</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
+                ) : groupResultsByPatient(results).map((group) => (
+                  <Fragment key={group.key}>
+                    {/* One heading per person — carries who they are + one "Ask AI"
+                        that loads THIS patient's whole history, never blended. */}
+                    <TableRow className="bg-muted/40 hover:bg-muted/40">
+                      <TableCell colSpan={8} className="py-2">
+                        <PatientCell name={group.name} relationship={group.relationship} accountHolder={user.name ?? user.whatsappPhone} />
+                      </TableCell>
+                      <TableCell className="py-2 text-right">
+                        {/* Renders only once the result carries a FamilyMember id;
+                            until the backend exposes it, no dead button. */}
+                        {group.patientId && (
+                          <Link href={`/playground?patientId=${group.patientId}`}>
+                            <Button variant="outline" size="sm" className="gap-1.5">
+                              <Sparkles size={13} />
+                              Ask AI
+                            </Button>
+                          </Link>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                    {group.rows.map((r) => (
+                      <TableRow key={r.id} className="cursor-pointer hover:bg-accent">
+                        <TableCell />
+                        <TableCell>
+                          <Link href={`/results/${r.id}`} className="capitalize hover:underline text-primary">
+                            {r.testType.replace(/_/g, " ")}
+                          </Link>
+                        </TableCell>
+                        <TableCell>{r.calculatedAge ?? "—"}</TableCell>
+                        <TableCell>{r.chronologicalAge ?? "—"}</TableCell>
+                        <TableCell className={parseFloat(r.ageDelta) < 0 ? "text-green-400" : "text-red-400"}>{r.ageDelta ?? "—"}</TableCell>
+                        <TableCell><StatusBadge status={r.status} /></TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleDateString()}</TableCell>
+                        <TableCell className="text-xs">
+                          {r.retestReminderSentAt ? (
+                            <span className="text-green-400">Sent {new Date(r.retestReminderSentAt).toLocaleDateString()}</span>
+                          ) : r.retestReminderOptIn ? (
+                            <span className="text-blue-400">Opted in</span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                          {r.reportUrl ? (
+                            <a href={r.reportUrl} target="_blank" rel="noopener noreferrer" className="inline-flex">
+                              <Button variant="outline" size="sm">
+                                <ExternalLink size={13} className="mr-1.5" />
+                                Open report
+                              </Button>
+                            </a>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">No link</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </Fragment>
                 ))}
               </TableBody>
             </Table>
