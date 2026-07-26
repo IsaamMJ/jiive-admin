@@ -20,10 +20,11 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Sparkles, ExternalLink, Reply, RefreshCw } from "lucide-react";
+import { Sparkles, ExternalLink, Reply, RefreshCw, FileText, Image as ImageIcon, Download, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { InfoTip } from "@/components/InfoTip";
+import { cn } from "@/lib/utils";
 
 /**
  * The chat keeps arriving after the page loaded. Poll while the operator is
@@ -61,6 +62,96 @@ const TX_TYPE_COLOR: Record<string, string> = {
 interface ConvButton {
   id: string;
   title: string;
+}
+
+/**
+ * A file the customer sent (a lab report PDF, a photo). WhatsApp keeps media ~30
+ * days, so `mediaId` is a live handle, not permanent storage — older uploads 404.
+ */
+interface ConvMedia {
+  mediaId: string;
+  filename?: string | null;
+  mimeType?: string | null;
+  caption?: string | null;
+}
+
+/**
+ * An attachment bubble for a media message. Shows the file up front (icon +
+ * name); clicking fetches it through the axios client so the admin bearer token
+ * is attached — a plain <a href> would hit the media endpoint unauthenticated and
+ * 401, and this is health data.
+ *
+ * The fetch is deliberately tolerant: the backend media endpoint is rolling out,
+ * and WhatsApp only retains media ~30 days, so a miss is EXPECTED, not a crash.
+ * A failure says so plainly instead of doing nothing.
+ */
+function MessageMedia({ media, tone }: { media: ConvMedia; tone: "light" | "dark" }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  const isImage = (media.mimeType ?? "").startsWith("image/");
+  const label = media.filename?.trim() || (isImage ? "Photo" : "Document");
+
+  async function open() {
+    if (busy) return;
+    setBusy(true);
+    setFailed(null);
+    try {
+      const r = await api.get(`/media/${encodeURIComponent(media.mediaId)}`, { responseType: "blob" });
+      const url = URL.createObjectURL(r.data as Blob);
+      // Open in a new tab; the browser renders PDFs/images inline, downloads the rest.
+      window.open(url, "_blank", "noopener,noreferrer");
+      // Give the tab a moment to grab the blob before we release it.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      setFailed(
+        status === 404
+          ? "File is no longer available (WhatsApp keeps uploads ~30 days)."
+          : status === 501 || status === 405
+            ? "File viewing isn't switched on yet."
+            : "Couldn't load this file."
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const frame =
+    tone === "light"
+      ? "border-primary-foreground/25 bg-primary-foreground/10 hover:bg-primary-foreground/20"
+      : "border-border bg-background/60 hover:bg-background";
+
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={open}
+        disabled={busy}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
+          frame
+        )}
+      >
+        {busy ? (
+          <Loader2 size={16} className="shrink-0 animate-spin opacity-70" />
+        ) : isImage ? (
+          <ImageIcon size={16} className="shrink-0 opacity-70" />
+        ) : (
+          <FileText size={16} className="shrink-0 opacity-70" />
+        )}
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate text-sm font-medium">{label}</span>
+          <span className="text-[11px] opacity-60">
+            {busy ? "Opening…" : "Tap to open"}
+          </span>
+        </span>
+        <Download size={14} className="ml-auto shrink-0 opacity-50" />
+      </button>
+      {media.caption?.trim() && <p className="mt-1 text-sm">{media.caption}</p>}
+      {failed && <p className="mt-1 text-[11px] text-red-400">{failed}</p>}
+    </div>
+  );
 }
 
 /**
@@ -108,8 +199,8 @@ interface UserDetail {
     // (id + the title the customer saw). Rendered as WhatsApp-style option rows
     // under the message. Present only once the backend stores the button set —
     // see docs/handoff-backend-conversation-buttons.md. Absent = nothing extra.
-    | { type?: "chat"; direction: string; content: string; displayLabel?: string | null; messageType?: string; buttons?: ConvButton[] | null; createdAt: string }
-    | { type: "template"; direction: "outbound"; content: string; displayLabel?: string | null; templateName: string; status: string; buttons?: ConvButton[] | null; createdAt: string }
+    | { type?: "chat"; direction: string; content: string; displayLabel?: string | null; messageType?: string; media?: ConvMedia | null; buttons?: ConvButton[] | null; createdAt: string }
+    | { type: "template"; direction: "outbound"; content: string; displayLabel?: string | null; templateName: string; status: string; media?: ConvMedia | null; buttons?: ConvButton[] | null; createdAt: string }
   )[];
   bookings: {
     id: string; patientName: string; testType: string; appointmentDate: string;
@@ -456,7 +547,11 @@ export default function UserDetailPage() {
                         <span className="text-[10px] text-primary-foreground/70">{msg.templateName}</span>
                         {failed && <span className="text-[10px] text-red-300">· failed</span>}
                       </div>
-                      <MessageBody content={msg.displayLabel ?? msg.content} />
+                      {msg.media ? (
+                        <MessageMedia media={msg.media} tone="light" />
+                      ) : (
+                        <MessageBody content={msg.displayLabel ?? msg.content} />
+                      )}
                       <p className="text-xs mt-1 text-primary-foreground/60">
                         {new Date(msg.createdAt).toLocaleString()}
                       </p>
@@ -468,7 +563,11 @@ export default function UserDetailPage() {
               return (
                 <div key={i} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${msg.direction === "outbound" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
-                    <MessageBody content={msg.displayLabel ?? msg.content} />
+                    {msg.media ? (
+                      <MessageMedia media={msg.media} tone={msg.direction === "outbound" ? "light" : "dark"} />
+                    ) : (
+                      <MessageBody content={msg.displayLabel ?? msg.content} />
+                    )}
                     <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
                       {new Date(msg.createdAt).toLocaleString()}
                     </p>
