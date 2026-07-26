@@ -10,8 +10,28 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import api from "@/lib/api";
+import { cn } from "@/lib/utils";
+
+// The three things a "clear history" can remove. The account, bookings, results
+// and credits are never touched — this only resets the chat/AI side.
+const CLEAR_SCOPES = [
+  { key: "conversations", label: "Conversations", hint: "The WhatsApp chat history." },
+  { key: "memories", label: "Memories", hint: "What the AI has learned about them." },
+  { key: "flowStates", label: "Flow states", hint: "Where the bot is mid-conversation — resets it to a fresh start." },
+] as const;
+type ClearScopeKey = (typeof CLEAR_SCOPES)[number]["key"];
+
+// The backend clears ALL THREE regardless of what we send — it silently ignores
+// per-scope keys (confirmed live: unknown body keys return 200, not 400). So
+// selecting a subset can't be honored yet, and shipping active checkboxes would
+// be a data-loss trap (untick "memories", backend wipes it anyway). Flip to true
+// once the endpoint honors the scopes. See docs/handoff-backend-clear-history-scopes.md.
+const SCOPED_CLEAR_SUPPORTED = false;
 
 interface EnvCheck {
   hasOpenAI: boolean;
@@ -57,6 +77,10 @@ export default function DebugPage() {
   const [phone, setPhone] = useState("");
   const [clearResult, setClearResult] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [scopes, setScopes] = useState<Record<ClearScopeKey, boolean>>({
+    conversations: true, memories: true, flowStates: true,
+  });
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [chatPhone, setChatPhone] = useState("");
   const [chatMsg, setChatMsg] = useState("");
   const [chatResult, setChatResult] = useState<string | null>(null);
@@ -66,17 +90,46 @@ export default function DebugPage() {
     api.get("/env-check").then((r) => { setEnv(r.data); setLoading(false); });
   }, []);
 
-  const handleClearHistory = async (e: React.FormEvent) => {
+  // Which scopes are effectively selected. Until the backend honors selection,
+  // it's always all three (the checkboxes are locked on).
+  const activeScopes = SCOPED_CLEAR_SUPPORTED
+    ? CLEAR_SCOPES.filter((s) => scopes[s.key])
+    : [...CLEAR_SCOPES];
+
+  const openClearConfirm = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!phone.trim()) return;
+    if (activeScopes.length === 0) {
+      toast.error("Pick at least one thing to clear.");
+      return;
+    }
+    setClearConfirmOpen(true);
+  };
+
+  const doClearHistory = async () => {
+    setClearConfirmOpen(false);
     setClearing(true);
     setClearResult(null);
     try {
-      const { data } = await api.delete(`/users/${phone}/clear-history`);
-      const msg = `Cleared: ${data.cleared.conversations} conversations, ${data.cleared.memories} memories, ${data.cleared.flowStates} flow states`;
+      // `confirm: true` is required by the endpoint for destructive ops. Scope
+      // flags are sent only when the backend honors them — otherwise it clears
+      // all three regardless, and sending them would imply a selection it ignores.
+      const body: Record<string, unknown> = { confirm: true };
+      if (SCOPED_CLEAR_SUPPORTED) for (const s of CLEAR_SCOPES) body[s.key] = scopes[s.key];
+
+      const { data } = await api.delete(`/users/${phone}/clear-history`, { data: body });
+      if (data.success === false) {
+        const msg = "Error: " + (data.error ?? "clear failed");
+        setClearResult(msg);
+        toast.error(msg);
+        return;
+      }
+      const c = data.cleared ?? {};
+      const msg = `Cleared: ${c.conversations ?? 0} conversations, ${c.memories ?? 0} memories, ${c.flowStates ?? 0} flow states`;
       setClearResult(msg);
       toast.success(msg);
     } catch (err: unknown) {
-      const msg = "Error: " + ((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Unknown error");
+      const msg = "Error: " + ((err as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.error ?? (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "Unknown error");
       setClearResult(msg);
       toast.error(msg);
     } finally {
@@ -132,11 +185,45 @@ export default function DebugPage() {
           <Card>
             <CardHeader><CardTitle className="text-sm font-medium">Clear User History</CardTitle></CardHeader>
             <CardContent>
-              <form onSubmit={handleClearHistory} className="flex flex-col gap-3">
+              <form onSubmit={openClearConfirm} className="flex flex-col gap-3">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="clear-phone">Phone number</Label>
                   <Input id="clear-phone" placeholder="919876543210" value={phone} onChange={(e) => setPhone(e.target.value)} required />
                 </div>
+
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs">What to clear</Label>
+                    {!SCOPED_CLEAR_SUPPORTED && (
+                      <span className="text-[10px] text-muted-foreground">Individual selection unlocks once the backend supports it</span>
+                    )}
+                  </div>
+                  {CLEAR_SCOPES.map((s) => {
+                    const checked = SCOPED_CLEAR_SUPPORTED ? scopes[s.key] : true;
+                    return (
+                      <label
+                        key={s.key}
+                        className={cn(
+                          "flex items-start gap-2.5 rounded-md border border-border px-3 py-2",
+                          SCOPED_CLEAR_SUPPORTED ? "cursor-pointer hover:bg-accent" : "opacity-70"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 h-4 w-4 accent-destructive"
+                          checked={checked}
+                          disabled={!SCOPED_CLEAR_SUPPORTED}
+                          onChange={(e) => setScopes((p) => ({ ...p, [s.key]: e.target.checked }))}
+                        />
+                        <span className="flex flex-col">
+                          <span className="text-sm font-medium leading-none">{s.label}</span>
+                          <span className="mt-1 text-xs text-muted-foreground">{s.hint}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+
                 <Button type="submit" variant="destructive" disabled={clearing}>
                   {clearing ? "Clearing…" : "Clear History"}
                 </Button>
@@ -166,6 +253,34 @@ export default function DebugPage() {
           </Card>
         </div>
       </div>
+
+      {/* Destructive-op confirmation. The endpoint requires confirm:true; this is
+          also the human gate — it names the number and lists exactly what goes. */}
+      <Dialog open={clearConfirmOpen} onOpenChange={setClearConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Clear history for {phone || "this number"}?</DialogTitle>
+            <DialogDescription>
+              Permanently removes the items below for this number. The account, bookings,
+              results and credits are untouched. This can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+            {activeScopes.map((s) => (
+              <div key={s.key} className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+                {s.label}
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setClearConfirmOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={doClearHistory} disabled={clearing}>
+              {clearing ? "Clearing…" : "Clear history"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AdminLayout>
   );
 }
