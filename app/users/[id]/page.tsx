@@ -122,7 +122,43 @@ interface UserDetail {
     retestReminderOptIn: boolean; retestReminderSentAt: string | null;
     /** Full shareable report link (latest non-expired token), or null if none. */
     reportUrl?: string | null;
+    // WHO this result is for. One account books for several people, so a result
+    // is not necessarily the account holder's. `patientName` is the test subject;
+    // `relationship` is how they relate to the account holder (FamilyMember, id-
+    // linked — not a name match). "self" = the account holder; null = an uploaded
+    // report with no booking yet (shows the account-holder name, no relationship).
+    patientName?: string | null;
+    relationship?: string | null;
   }[];
+}
+
+/**
+ * "Who is this result for", rendered for the Patient column.
+ *
+ * The subject's name is the safety-critical bit — it's what stops a result being
+ * read as the wrong person's. The relationship is shown only when it adds
+ * something: "self" is dropped (it just repeats the account holder in the page
+ * title), and null (uploaded reports not yet linked to a family member) shows the
+ * name alone. So a family booking reads "Nisha Fathima · Mother"; the account
+ * holder's own result reads just "Mohamed Isaam".
+ *
+ * `accountHolder` is the fallback for pre-deploy rows / uploaded reports that
+ * carry no patientName yet — better the account name than a bare dash.
+ */
+function PatientCell({
+  name, relationship, accountHolder,
+}: { name?: string | null; relationship?: string | null; accountHolder: string }) {
+  const subject = name?.trim() || accountHolder;
+  const rel = relationship?.trim();
+  const showRel = rel && rel.toLowerCase() !== "self";
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span className="font-medium">{subject}</span>
+      {showRel && (
+        <span className="text-xs capitalize text-muted-foreground">· {rel}</span>
+      )}
+    </span>
+  );
 }
 
 /**
@@ -484,6 +520,7 @@ export default function UserDetailPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Patient</TableHead>
                   <TableHead>Test</TableHead>
                   <TableHead>Bio Age</TableHead>
                   <TableHead>Chrono Age</TableHead>
@@ -496,9 +533,12 @@ export default function UserDetailPage() {
               </TableHeader>
               <TableBody>
                 {results.length === 0 ? (
-                  <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
                 ) : results.map((r) => (
                   <TableRow key={r.id} className="cursor-pointer hover:bg-accent">
+                    <TableCell>
+                      <PatientCell name={r.patientName} relationship={r.relationship} accountHolder={user.name ?? user.whatsappPhone} />
+                    </TableCell>
                     <TableCell>
                       <Link href={`/results/${r.id}`} className="capitalize hover:underline text-primary">
                         {r.testType.replace(/_/g, " ")}

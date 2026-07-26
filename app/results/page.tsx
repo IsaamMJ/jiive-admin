@@ -27,6 +27,11 @@ interface Result {
   createdAt: string;
   user: { id: string; whatsappPhone: string; name: string };
   booking: { patientName: string; appointmentDate: string };
+  // Flat subject fields (id-linked to FamilyMember, not a name match). "self" =
+  // the account holder; null = an uploaded report not yet linked to a member.
+  // The "User" column is who owns the account; "Patient" is who the test is FOR.
+  patientName?: string | null;
+  relationship?: string | null;
 }
 
 const STATUS_OPTIONS = ["all", "pending", "completed", "failed"];
@@ -67,7 +72,8 @@ export default function ResultsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>User</TableHead>
+                  <TableHead>Account</TableHead>
+                  <TableHead>Patient</TableHead>
                   <TableHead>Test</TableHead>
                   <TableHead>Bio Age</TableHead>
                   <TableHead>Chrono Age</TableHead>
@@ -84,7 +90,20 @@ export default function ResultsPage() {
                     className="cursor-pointer hover:bg-accent"
                     onClick={() => router.push(`/results/${r.id}`)}
                   >
-                    <TableCell className="font-medium">{r.user.name ?? r.user.whatsappPhone}</TableCell>
+                    <TableCell className="text-muted-foreground">{r.user.name ?? r.user.whatsappPhone}</TableCell>
+                    <TableCell>
+                      {(() => {
+                        const subject = r.patientName?.trim() || r.booking?.patientName?.trim() || r.user.name || r.user.whatsappPhone;
+                        const rel = r.relationship?.trim();
+                        const showRel = rel && rel.toLowerCase() !== "self";
+                        return (
+                          <span className="inline-flex items-baseline gap-1.5">
+                            <span className="font-medium">{subject}</span>
+                            {showRel && <span className="text-xs capitalize text-muted-foreground">· {rel}</span>}
+                          </span>
+                        );
+                      })()}
+                    </TableCell>
                     <TableCell className="capitalize">{r.testType.replace(/_/g, " ")}</TableCell>
                     <TableCell>{r.calculatedAge ?? "—"}</TableCell>
                     <TableCell>{r.chronologicalAge ?? "—"}</TableCell>
@@ -102,7 +121,7 @@ export default function ResultsPage() {
                 ))}
                 {results.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground py-8">No results found</TableCell>
+                    <TableCell colSpan={8} className="text-center text-muted-foreground py-8">No results found</TableCell>
                   </TableRow>
                 )}
               </TableBody>
