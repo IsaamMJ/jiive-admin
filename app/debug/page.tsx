@@ -26,12 +26,11 @@ const CLEAR_SCOPES = [
 ] as const;
 type ClearScopeKey = (typeof CLEAR_SCOPES)[number]["key"];
 
-// The backend clears ALL THREE regardless of what we send — it silently ignores
-// per-scope keys (confirmed live: unknown body keys return 200, not 400). So
-// selecting a subset can't be honored yet, and shipping active checkboxes would
-// be a data-loss trap (untick "memories", backend wipes it anyway). Flip to true
-// once the endpoint honors the scopes. See docs/handoff-backend-clear-history-scopes.md.
-const SCOPED_CLEAR_SUPPORTED = false;
+// The endpoint honors per-scope flags now (verified live: supported keys are
+// confirm / conversations / memories / flowStates, and an unknown key 400s), so
+// selecting a subset is safe. Body sends only the ticked scopes; omitting all
+// would clear everything, but the UI always sends the three explicitly.
+const SCOPED_CLEAR_SUPPORTED = true;
 
 interface EnvCheck {
   hasOpenAI: boolean;

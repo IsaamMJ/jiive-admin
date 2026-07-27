@@ -7,6 +7,11 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
+import { UserRound } from "lucide-react";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ModelSwitch } from "./ModelSwitch";
@@ -36,6 +41,12 @@ const MAX_POST_ACTION_POLLS = 18;
 
 let entryCounter = 0;
 const nextId = () => String(++entryCounter);
+
+/** One de-identified patient in an account's by-user list. */
+interface PatientChoice {
+  id: string;
+  label: string;
+}
 
 const PATIENT_CONV_KEY = "jiive_conv_patients_v1";
 function getPatientMap(): Record<string, string> {
@@ -95,6 +106,9 @@ export default function PlaygroundPage() {
   const [statusLoading, setStatusLoading] = useState(true);
   // True while the deep-link patient fetch is in flight — blocks the composer (Bug F).
   const [deepLinkPending, setDeepLinkPending] = useState(false);
+  // When a profile deep-link resolves to an account with several patients, we ask
+  // the operator which one — never guess, never blend.
+  const [accountPatients, setAccountPatients] = useState<PatientChoice[] | null>(null);
 
   // Conversation history state
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -210,21 +224,38 @@ export default function PlaygroundPage() {
     router.replace("/playground");
     setDeepLinkPending(true);
 
-    const path = patientId
-      ? `/llm-playground/patients/by-patient/${patientId}`
-      : `/llm-playground/patients/by-user/${userId}`;
+    const pick = (id: string) => {
+      setActivePatientId(id);
+      activePatientIdRef.current = id;
+    };
 
-    api
-      .get<{ id: string; label: string; deidentified: object }>(path)
-      .then((resp) => {
-        setActivePatientId(resp.data.id);
-        activePatientIdRef.current = resp.data.id;
-        setDeepLinkPending(false);
-      })
-      .catch(() => {
-        toast.info("No patient record available for this link in the playground.");
-        setDeepLinkPending(false);
-      });
+    if (patientId) {
+      // Precise: one FamilyMember's context (from the Results-tab per-patient button).
+      api
+        .get<{ id: string }>(`/llm-playground/patients/by-patient/${patientId}`)
+        .then((resp) => pick(resp.data.id))
+        .catch(() => toast.info("No patient record available for this link."))
+        .finally(() => setDeepLinkPending(false));
+    } else {
+      // Account-level (the profile button). An account is a household, so this
+      // returns a LIST — one de-identified context per family member. Auto-load a
+      // lone patient; let the operator choose when there's more than one, rather
+      // than silently pick one (or worse, blend them — the old bug).
+      api
+        .get<{ patients: PatientChoice[] }>(`/llm-playground/patients/by-user/${userId}`)
+        .then((resp) => {
+          const list = resp.data.patients ?? [];
+          if (list.length === 0) {
+            toast.info("No patient record available for this user in the playground.");
+          } else if (list.length === 1) {
+            pick(list[0].id);
+          } else {
+            setAccountPatients(list);
+          }
+        })
+        .catch(() => toast.info("No patient record available for this link."))
+        .finally(() => setDeepLinkPending(false));
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -693,6 +724,37 @@ export default function PlaygroundPage() {
           </div>
         </div>
       </div>
+
+      {/* Account has several patients → choose which one's context to load. Labels
+          are de-identified (age band + bio-age); no names reach the playground. */}
+      <Dialog open={accountPatients !== null} onOpenChange={(o) => { if (!o) setAccountPatients(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Which patient?</DialogTitle>
+            <DialogDescription>
+              This account has more than one patient. Pick whose results the AI should look at —
+              each is loaded on its own, never blended.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            {(accountPatients ?? []).map((p) => (
+              <Button
+                key={p.id}
+                variant="outline"
+                className="h-auto justify-start gap-2 py-2.5 text-left"
+                onClick={() => {
+                  setActivePatientId(p.id);
+                  activePatientIdRef.current = p.id;
+                  setAccountPatients(null);
+                }}
+              >
+                <UserRound size={15} className="shrink-0 text-muted-foreground" />
+                <span className="text-sm">{p.label}</span>
+              </Button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </AdminLayout>
   );
 }
