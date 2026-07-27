@@ -33,9 +33,10 @@ type ClearScopeKey = (typeof CLEAR_SCOPES)[number]["key"];
 const SCOPED_CLEAR_SUPPORTED = true;
 
 // Full purge (right-to-erasure) — a different, heavier action than Clear History.
-// The backend endpoint doesn't exist yet, so this stays gated OFF (the button is
-// disabled with a note) until it ships. See docs/handoff-backend-user-purge.md.
-const PURGE_SUPPORTED = false;
+// Live: DELETE /users/:phone/purge honors confirm:true (400 without / on unknown
+// keys), erases PII and retains the legal stub (verified). See
+// docs/handoff-backend-user-purge.md.
+const PURGE_SUPPORTED = true;
 
 // What a purge does, spelled out for the confirm step. Deliberately erases PII but
 // KEEPS the two things law requires: a de-identified stub of completed paid orders
