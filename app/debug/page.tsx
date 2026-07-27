@@ -32,6 +32,30 @@ type ClearScopeKey = (typeof CLEAR_SCOPES)[number]["key"];
 // would clear everything, but the UI always sends the three explicitly.
 const SCOPED_CLEAR_SUPPORTED = true;
 
+// Full purge (right-to-erasure) — a different, heavier action than Clear History.
+// The backend endpoint doesn't exist yet, so this stays gated OFF (the button is
+// disabled with a note) until it ships. See docs/handoff-backend-user-purge.md.
+const PURGE_SUPPORTED = false;
+
+// What a purge does, spelled out for the confirm step. Deliberately erases PII but
+// KEEPS the two things law requires: a de-identified stub of completed paid orders
+// (financial/tax retention) and the phone-hash opt-out (so a purged unsubscriber
+// can't be messaged again).
+const PURGE_ERASES = [
+  "Name & phone number",
+  "All conversations",
+  "AI memories",
+  "Result values & report content",
+  "Saved addresses",
+  "Family members",
+  "Credit balance",
+  "Incomplete bookings",
+];
+const PURGE_KEEPS = [
+  "An anonymised stub of completed paid orders (amount + date, no PII) — tax law",
+  "The phone-hash opt-out flag — so they stay unsubscribed",
+];
+
 interface EnvCheck {
   hasOpenAI: boolean;
   hasLangfusePublic: boolean;
@@ -80,6 +104,12 @@ export default function DebugPage() {
     conversations: true, memories: true, flowStates: true,
   });
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  // Purge — separate target + a type-the-number-to-confirm gate.
+  const [purgePhone, setPurgePhone] = useState("");
+  const [purgeConfirmText, setPurgeConfirmText] = useState("");
+  const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
+  const [purging, setPurging] = useState(false);
+  const [purgeResult, setPurgeResult] = useState<string | null>(null);
   const [chatPhone, setChatPhone] = useState("");
   const [chatMsg, setChatMsg] = useState("");
   const [chatResult, setChatResult] = useState<string | null>(null);
@@ -133,6 +163,42 @@ export default function DebugPage() {
       toast.error(msg);
     } finally {
       setClearing(false);
+    }
+  };
+
+  // Typing the exact phone number into the confirm box is what arms the button —
+  // a purge is irreversible, so it can't be a single fat-fingered click.
+  const purgeArmed =
+    PURGE_SUPPORTED &&
+    purgePhone.trim().length > 0 &&
+    purgeConfirmText.trim() === purgePhone.trim();
+
+  const doPurge = async () => {
+    setPurgeConfirmOpen(false);
+    setPurging(true);
+    setPurgeResult(null);
+    try {
+      const { data } = await api.delete(`/users/${purgePhone.trim()}/purge`, {
+        data: { confirm: true },
+      });
+      if (data.success === false) {
+        const msg = "Error: " + (data.error ?? "purge failed");
+        setPurgeResult(msg);
+        toast.error(msg);
+        return;
+      }
+      const msg = `Purged ${purgePhone.trim()} — PII erased, legal stub retained.`;
+      setPurgeResult(msg);
+      toast.success(msg);
+      setPurgePhone("");
+      setPurgeConfirmText("");
+    } catch (err: unknown) {
+      const r = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data;
+      const msg = "Error: " + (r?.error ?? r?.message ?? "Unknown error");
+      setPurgeResult(msg);
+      toast.error(msg);
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -231,6 +297,74 @@ export default function DebugPage() {
             </CardContent>
           </Card>
 
+          <Card className="border-destructive/40">
+            <CardHeader>
+              <CardTitle className="text-sm font-medium text-destructive">Purge User (Right to Erasure)</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Permanently erases a person&apos;s data — far more than Clear History. Use only for a
+                genuine deletion request. Irreversible.
+              </p>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-md border border-destructive/20 bg-destructive/5 p-2.5">
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-destructive">Erased</p>
+                    <ul className="space-y-0.5 text-[11px] text-muted-foreground">
+                      {PURGE_ERASES.map((x) => <li key={x}>• {x}</li>)}
+                    </ul>
+                  </div>
+                  <div className="rounded-md border border-border p-2.5">
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Kept (by law)</p>
+                    <ul className="space-y-0.5 text-[11px] text-muted-foreground">
+                      {PURGE_KEEPS.map((x) => <li key={x}>• {x}</li>)}
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="purge-phone">Phone number</Label>
+                  <Input
+                    id="purge-phone"
+                    placeholder="919876543210"
+                    value={purgePhone}
+                    onChange={(e) => setPurgePhone(e.target.value)}
+                    disabled={!PURGE_SUPPORTED}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="purge-confirm" className="text-xs">
+                    Type the phone number again to confirm
+                  </Label>
+                  <Input
+                    id="purge-confirm"
+                    placeholder="919876543210"
+                    value={purgeConfirmText}
+                    onChange={(e) => setPurgeConfirmText(e.target.value)}
+                    disabled={!PURGE_SUPPORTED || !purgePhone.trim()}
+                    className="font-mono"
+                  />
+                </div>
+
+                <Button
+                  variant="destructive"
+                  disabled={!purgeArmed || purging}
+                  onClick={() => setPurgeConfirmOpen(true)}
+                >
+                  {purging ? "Purging…" : "Purge user permanently"}
+                </Button>
+
+                {!PURGE_SUPPORTED && (
+                  <p className="text-[11px] text-amber-500">
+                    Not available yet — needs the backend purge endpoint. Handed off; unlocks the moment it ships.
+                  </p>
+                )}
+                {purgeResult && <p className="text-xs text-muted-foreground">{purgeResult}</p>}
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader><CardTitle className="text-sm font-medium">Test Chat (Lumi)</CardTitle></CardHeader>
             <CardContent>
@@ -276,6 +410,26 @@ export default function DebugPage() {
             <Button variant="outline" onClick={() => setClearConfirmOpen(false)}>Cancel</Button>
             <Button variant="destructive" onClick={doClearHistory} disabled={clearing}>
               {clearing ? "Clearing…" : "Clear history"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Purge — the last gate before an irreversible erasure. */}
+      <Dialog open={purgeConfirmOpen} onOpenChange={setPurgeConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Purge {purgePhone || "this user"} permanently?</DialogTitle>
+            <DialogDescription>
+              This erases their name, phone, chat, memories, results, addresses, family members and
+              credits. A de-identified stub of completed paid orders and the opt-out flag are kept
+              for legal reasons. <span className="font-medium text-foreground">This cannot be undone.</span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPurgeConfirmOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={doPurge} disabled={purging}>
+              {purging ? "Purging…" : "Purge permanently"}
             </Button>
           </DialogFooter>
         </DialogContent>
