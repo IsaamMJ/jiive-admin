@@ -49,21 +49,60 @@ So an answer generated purely from GPT-4o's parametric memory is handed to the c
 with an explicit assurance that it came from Indian medical guidelines — and an instruction to
 present it confidently.
 
+**Important scoping correction (we initially mis-attributed this):** the live iron reply below was
+**NOT** produced by this fallback — retrieval succeeded for that query (a playground query of the same
+question returns all 5 chunks above threshold). The `plainLlm` fallback above is a **latent** risk
+confirmed by reading the code, not the cause of what we observed. The observed behaviour is P0-1b.
+
+**Required outcome:** a health answer is either grounded in the KB, or the bot says it doesn't know and
+offers a human. Never a silent fallback to parametric knowledge, and never the "grounded in Indian
+medical guidelines" note when `sourcesUsed === 0`.
+
+---
+
+## P0-1b — The KB is used as flavour, not as an answer source (this is what we reproduced)
+
+`MEDICAL_SYSTEM_PROMPT` (`rag.service.ts:27`) — the prompt used on the **success** path — is a
+tips-generator, not a question-answerer:
+
+```
+- Give 3-4 quick tips as bullet points using ✅ emoji
+- Each bullet = 1 short line (under 15 words)
+- Use Indian foods and context (dal, roti, ghee, millets, curd, etc.)
+- NEVER diagnose, prescribe medications, or give dosages
+```
+
 **Reproduced on production WhatsApp, 2026-07-29:**
 
 > **User:** How much Iron do i need per day?
 > **Lumi:** ✅ Include iron-rich foods like spinach, lentils, and chickpeas. ✅ Pair iron sources with
 > vitamin C-rich foods like lemon or amla… ✅ Cook in iron utensils…
 
-None of *spinach, lentils, chickpeas, lemon, amla, coffee, utensils, recipes* appears anywhere in the
-knowledge base. Meanwhile the authoritative answer **was in the KB and went unused**: ICMR-NIN 2020
-iron RDA = **19 mg/day (men)**, **29 mg/day (women)**.
+That reply matches the prompt's format rules exactly — ✅ bullets, short lines, Indian foods, closing
+question. The retrieved ICMR context was present and simply not used for the number, because:
 
-It also never asked the one clinically necessary question — male or female — despite a 10 mg/day
-difference, and never said "I don't know".
+1. the prompt instructs "3-4 quick tips", never "answer the question asked"; and
+2. **"NEVER … give dosages"** — an RDA expressed in mg/day reads as a dosage, so the one correct
+   answer to "how much iron per day" is the one thing the prompt forbids.
 
-**Required outcome:** a health answer is either grounded in the KB, or the bot says it doesn't know and
-offers a human. Never a silent fallback to parametric knowledge.
+Consequences:
+- The authoritative answer was in the KB and went unused: ICMR-NIN 2020 iron RDA = **19 mg/day (men)**,
+  **29 mg/day (women)**. Ingesting that document changed no answer, and **cannot**, under this prompt.
+- "Use Indian foods and context" actively invites food names from the model's own parametric knowledge —
+  which is why *spinach, lentils, chickpeas, lemon, amla, utensils* appear, none of which exist anywhere
+  in the KB.
+- It never asked the clinically necessary question — male or female — despite a 10 mg/day difference,
+  and never said "I don't know".
+
+**Required:** separate "quantitative reference lookup" from "lifestyle tips".
+- When the question asks for a value (how much / what is the RDA / recommended intake), the answer must
+  come from the source with the number, the qualifier (male/female, EAR vs RDA, 2020 vs 2010), and a
+  citation — or an explicit "I don't know".
+- Reconcile the "NEVER give dosages" rule: a **population reference intake** (ICMR RDA/EAR) is not a
+  prescription. Keep the ban on prescribing/medication dosing; allow citing a published reference value
+  with its source and the male/female qualifier. If you prefer to keep the blanket ban, then the bot must
+  **say so and hand off** rather than silently substituting food tips.
+- Ask the disambiguating question (male/female) before giving a gendered value.
 
 - When `sourcesUsed === 0`, do **not** return an answer to present. Return an explicit
   `grounded: false` and let the caller emit the refusal + human-handoff copy that already exists.
