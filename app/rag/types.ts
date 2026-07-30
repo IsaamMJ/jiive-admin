@@ -119,6 +119,66 @@ export interface VersionInfo {
   totalChunks: number;
 }
 
+// ── Markdown conversion (POST /rag/convert) ──────────────────────────────────
+//
+// Previews only — persists NOTHING. Paste raw web content, get back reviewable
+// Markdown plus a verification report. The operator then posts the (optionally
+// edited) markdown to POST /rag/documents/text to enter the normal review flow.
+//
+// ⚠️ `verify.ok === false` is a SAFETY GATE, not a hint: ingestion must be
+// impossible while it is false. A silently altered clinical value (19 mg/day →
+// 18 mg/day) is indistinguishable from a correct one once embedded and cited
+// back to a patient as guideline-backed fact.
+
+export interface ConvertVerifyStats {
+  numbersInSource: number;
+  numbersInOutput: number;
+  /** Numbers present in the output but ABSENT from the source — the fail condition. */
+  fabricatedNumbers: string[];
+  sourceWords: number;
+  outputWords: number;
+  sections: number;
+}
+
+export interface ConvertVerify {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  stats: ConvertVerifyStats;
+}
+
+export interface ConvertChunk {
+  text: string;
+  /** Real heading path — "Title › Section › Sub-section", not a fabricated page. */
+  source: string;
+  headingPath: string[];
+  chunkIndex: number;
+}
+
+/** Content the converter discarded. Surfaced so truncation is never silent. */
+export interface ConvertDropped {
+  source: string;
+  words: number;
+  text: string;
+}
+
+export interface ConvertCleanup {
+  preRemovedLines: number;
+  preRemovedSections: string[];
+  postRemovedLines: number;
+  postRemovedSections: string[];
+}
+
+export interface ConvertResponse {
+  markdown: string;
+  verify: ConvertVerify;
+  chunks: ConvertChunk[];
+  tablesSkipped: number;
+  sectionsFound: number;
+  dropped: ConvertDropped[];
+  cleanup: ConvertCleanup;
+}
+
 // ── Paste text ───────────────────────────────────────────────────────────────
 
 export interface PasteTextResponse {

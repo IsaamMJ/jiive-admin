@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Trash2, Eye, CheckCircle, Upload, AlertTriangle, Files } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
+import { ConvertPanel } from "./ConvertPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -758,6 +759,9 @@ export default function KnowledgeBasePage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Convert web content → verified Markdown → the normal review flow */}
+        <ConvertPanel onIngested={() => { fetchDocs(); fetchOverview(); fetchVersion(); }} />
 
         {/* Paste text */}
         <Card>
