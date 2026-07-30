@@ -549,6 +549,10 @@ export default function KnowledgeBasePage() {
   // F1: defensive derived vars — null API fields must not white-screen the dialog
   const conflicts = reviewDoc?.numericConflicts ?? [];
   const tables = reviewDoc?.tables ?? [];
+  // An empty conflict list is only reassuring if the check actually RAN. When the
+  // gate is inert (no marker dictionary) `numericConflicts: []` means "not
+  // checked" — showing nothing would read as "checked, clean".
+  const conflictGateInert = reviewDoc?.conflictGate === "inert";
 
   // Paste-text local validation (approximation of server gates — see MAX/MIN_PASTE_* above).
   const pasteTextTrimmed = pasteText.trim();
@@ -980,7 +984,17 @@ export default function KnowledgeBasePage() {
                   ? `${reviewDoc.pageCount} page${reviewDoc.pageCount !== 1 ? "s" : ""}`
                   : "Page count unknown"}
                 {" · "}
-                {reviewDoc.digitalNative ? "Digital native" : "Scanned"}
+                {/* null = never measured. Saying "Scanned" would assert a finding
+                    the backend never made — unknown must read as unknown. */}
+                {reviewDoc.digitalNative === null ? (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    Parse quality unknown — not analysed
+                  </span>
+                ) : reviewDoc.digitalNative ? (
+                  "Digital native"
+                ) : (
+                  "Scanned"
+                )}
                 {isForcedSBS && " · Side-by-side review required"}
               </p>
             )}
@@ -1027,6 +1041,20 @@ export default function KnowledgeBasePage() {
                       I{"'"}ve checked the tables against the source
                     </span>
                   </label>
+
+                  {/* Conflict check didn't run — silence here is not a pass */}
+                  {conflictGateInert && (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                      <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                        Numeric conflict check did not run
+                      </p>
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        No marker dictionary is loaded, so this document was <strong>not</strong> checked
+                        against existing values. An empty conflict list here means &ldquo;not
+                        checked&rdquo;, not &ldquo;clean&rdquo; — verify any numbers yourself.
+                      </p>
+                    </div>
+                  )}
 
                   {/* Numeric conflicts (prominent) */}
                   {conflicts.length > 0 && (
@@ -1111,6 +1139,20 @@ export default function KnowledgeBasePage() {
             ) : (
               /* ── Standard mode: single pane ─────────────────────────────── */
               <div className="flex-1 overflow-auto flex flex-col gap-4 min-h-0">
+                {/* Conflict check didn't run — silence here is not a pass */}
+                {conflictGateInert && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                    <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                      Numeric conflict check did not run
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      No marker dictionary is loaded, so this document was <strong>not</strong> checked
+                      against existing values. An empty conflict list here means &ldquo;not
+                      checked&rdquo;, not &ldquo;clean&rdquo; — verify any numbers yourself.
+                    </p>
+                  </div>
+                )}
+
                 {/* Numeric conflicts (prominent) */}
                 {conflicts.length > 0 && (
                   <div className="rounded-lg border border-red-300 bg-red-50 p-4 flex flex-col gap-2">

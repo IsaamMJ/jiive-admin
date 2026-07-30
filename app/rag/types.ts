@@ -63,10 +63,21 @@ export interface ReviewResponse {
   reviewMode: "standard" | "forced_side_by_side";
   pageCount: number | null;
   parsedText: string;
-  digitalNative: boolean;
+  /**
+   * Whether the PDF had a real text layer. `null` means NEVER MEASURED — not
+   * "scanned". Rendering null as either verdict invents a parse-quality claim the
+   * backend never made, which is exactly the class of bug this KB has to avoid.
+   */
+  digitalNative: boolean | null;
   sourceDate: string | null;
   tables: ReviewTable[];
   numericConflicts: NumericConflict[];
+  /**
+   * Whether numeric-conflict checking actually ran. `inert` = the marker
+   * dictionary isn't loaded, so `numericConflicts: []` means "not checked", NOT
+   * "checked and clean". Absent on older payloads — treat missing as unknown.
+   */
+  conflictGate?: "inert" | "active";
   sourcePdfUrl: string;
 }
 
