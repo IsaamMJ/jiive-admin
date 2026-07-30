@@ -88,12 +88,13 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
       });
       setResult(r.data);
       setMarkdown(r.data.markdown);
-      if (r.data.verify.ok) {
-        setEdited(false); // verified against the real source — the gate may open
-        toast.success("Your edit is verified against the source.");
-      } else {
-        toast.error("Edit still fails verification — ingestion stays blocked.");
-      }
+      // Clear `edited` either way: the result now DESCRIBES the current markdown,
+      // so the report is no longer stale and must be shown. A failure has to be
+      // visible — hiding it would block ingestion without telling anyone why.
+      // From here the gate is driven by verify.ok alone.
+      setEdited(false);
+      if (r.data.verify.ok) toast.success("Your edit is verified against the source.");
+      else toast.error("Edit still fails verification — ingestion stays blocked.");
     } catch (err: unknown) {
       const d = (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
       toast.error(d?.message ?? d?.error ?? "Could not verify the edit.");
