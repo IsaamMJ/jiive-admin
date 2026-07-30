@@ -140,11 +140,25 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
           onClick={handleConvert}
         >
           {converting ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-          {converting ? "Converting…" : "Convert"}
+          {converting ? "Converting…" : edited ? "Convert again (discards markdown edits)" : "Convert"}
         </Button>
+        {edited && (
+          <p className="-mt-1 text-[11px] text-muted-foreground">
+            Convert re-runs on the pasted content above, so it will replace your markdown edits. To
+            keep a correction, edit the pasted content instead and convert — that way the numbers are
+            still checked against a real source.
+          </p>
+        )}
 
         {result && verify && (
           <div className="flex flex-col gap-3 border-t border-border pt-3">
+            {/* Everything in this block describes the LAST conversion. Once the
+                operator edits the markdown it no longer describes what would be
+                ingested, so it is hidden rather than left on screen to mislead —
+                a stale green tick is the exact failure mode this panel exists to
+                prevent. */}
+            {!edited && (
+              <>
             {/* ── The verdict. This is the safety gate, so it leads. ───────── */}
             {verify.ok ? (
               <div className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 p-3">
@@ -257,6 +271,9 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
               </div>
             </div>
 
+              </>
+            )}
+
             {/* ── Edit + ingest ───────────────────────────────────────────── */}
             {editing && (
               <div className="flex flex-col gap-1.5">
@@ -271,10 +288,17 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
             )}
 
             {edited && (
-              <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                You edited the markdown, so the verification above no longer applies. Convert again to
-                re-check the numbers before ingesting.
-              </p>
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                <p className="flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                  <AlertTriangle size={13} className="shrink-0" />
+                  Not verified — you edited the markdown
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  The verification and chunk preview applied to the previous conversion, so they&apos;ve
+                  been hidden. Press <strong>Convert</strong> again to re-check your edits against the
+                  source before ingesting.
+                </p>
+              </div>
             )}
 
             <div className="flex flex-wrap items-center gap-2">
