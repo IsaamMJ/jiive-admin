@@ -634,6 +634,17 @@ export default function KnowledgeBasePage() {
           <CardHeader><CardTitle>Upload document</CardTitle></CardHeader>
           <CardContent>
             <div className="flex flex-col gap-3">
+              {/* PDF text is NOT junk-stripped — measured on a real journal PDF, the
+                  running header reached 6 of 13 chunks, plus DOI, copyright, an email
+                  and the whole reference list. Only paste → Convert is cleaned, so
+                  say so here rather than let the quality gap stay invisible. */}
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                PDF text isn&apos;t cleaned — running headers, DOIs, copyright lines and the reference
+                list end up in the chunks. If you can copy the content from a web page instead, use{" "}
+                <strong>Convert web content</strong> below: it strips that furniture and checks every
+                number against your source.
+              </p>
+
               <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}

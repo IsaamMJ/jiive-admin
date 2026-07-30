@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import {
-  Wand2, Loader2, CheckCircle2, AlertTriangle, XCircle, Pencil, Upload, ChevronDown,
+  Wand2, Loader2, CheckCircle2, AlertTriangle, XCircle, Pencil, Upload, ChevronDown, ShieldCheck,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,7 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
   const [edited, setEdited] = useState(false);
 
   const [ingesting, setIngesting] = useState(false);
+  const [reverifying, setReverifying] = useState(false);
   const [showDropped, setShowDropped] = useState(false);
 
   const verify = result?.verify;
@@ -68,6 +69,36 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
       toast.error(d?.message ?? d?.error ?? "Conversion failed.");
     } finally {
       setConverting(false);
+    }
+  }
+
+  /**
+   * Re-check an edited markdown against the ORIGINAL pasted source. The source is
+   * required by the backend precisely because verifying edited markdown against
+   * itself would pass unconditionally and check nothing — so the baseline stays
+   * the operator's paste, never their edit.
+   */
+  async function handleReverify() {
+    if (!content.trim() || reverifying) return;
+    setReverifying(true);
+    try {
+      const r = await api.post<ConvertResponse>("/rag/verify", {
+        markdown,
+        source: content,
+      });
+      setResult(r.data);
+      setMarkdown(r.data.markdown);
+      if (r.data.verify.ok) {
+        setEdited(false); // verified against the real source — the gate may open
+        toast.success("Your edit is verified against the source.");
+      } else {
+        toast.error("Edit still fails verification — ingestion stays blocked.");
+      }
+    } catch (err: unknown) {
+      const d = (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
+      toast.error(d?.message ?? d?.error ?? "Could not verify the edit.");
+    } finally {
+      setReverifying(false);
     }
   }
 
@@ -140,15 +171,8 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
           onClick={handleConvert}
         >
           {converting ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-          {converting ? "Converting…" : edited ? "Convert again (discards markdown edits)" : "Convert"}
+          {converting ? "Converting…" : edited ? "Re-convert from source (discards edits)" : "Convert"}
         </Button>
-        {edited && (
-          <p className="-mt-1 text-[11px] text-muted-foreground">
-            Convert re-runs on the pasted content above, so it will replace your markdown edits. To
-            keep a correction, edit the pasted content instead and convert — that way the numbers are
-            still checked against a real source.
-          </p>
-        )}
 
         {result && verify && (
           <div className="flex flex-col gap-3 border-t border-border pt-3">
@@ -197,6 +221,27 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
                     Nothing was saved. Re-copy the source, or edit the markdown and convert again.
                   </p>
                 </div>
+              </div>
+            )}
+
+            {/* Numbers the converter DROPPED. Never blocks — losing superseded
+                values is often right — but a large gap is how you notice an entire
+                table went missing. */}
+            {verify.stats.missingNumbers && verify.stats.missingNumbers.length > 0 && (
+              <div className="rounded-lg border border-border bg-muted/40 p-2.5">
+                <p className="text-[11px] font-medium">
+                  {verify.stats.missingNumbers.length} number
+                  {verify.stats.missingNumbers.length !== 1 ? "s" : ""} from your source didn&apos;t make
+                  it into the output
+                </p>
+                <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                  {verify.stats.missingNumbers.slice(0, 24).join(", ")}
+                  {verify.stats.missingNumbers.length > 24 && ` +${verify.stats.missingNumbers.length - 24} more`}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Often fine — superseded or navigational figures get dropped. Check none of them is a
+                  value you needed, e.g. a whole table going missing.
+                </p>
               </div>
             )}
 
@@ -282,6 +327,10 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
                   id="convert-md"
                   value={markdown}
                   onChange={(e) => { setMarkdown(e.target.value); setEdited(true); }}
+                  // Verification is a pure code check (no LLM) — free and instant,
+                  // so re-check the moment they stop typing rather than making
+                  // safety an extra button they might not press.
+                  onBlur={() => { if (edited && !reverifying) void handleReverify(); }}
                   className="min-h-48 w-full resize-y rounded-md border border-border bg-background px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </div>
@@ -295,9 +344,18 @@ export function ConvertPanel({ onIngested }: { onIngested: () => void }) {
                 </p>
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   The verification and chunk preview applied to the previous conversion, so they&apos;ve
-                  been hidden. Press <strong>Convert</strong> again to re-check your edits against the
-                  source before ingesting.
+                  been hidden. Re-check your edit against the original pasted source before ingesting.
                 </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2 gap-1.5 border-amber-500/40"
+                  disabled={reverifying}
+                  onClick={handleReverify}
+                >
+                  {reverifying ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                  {reverifying ? "Verifying…" : "Verify edit against source"}
+                </Button>
               </div>
             )}
 

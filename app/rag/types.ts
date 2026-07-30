@@ -135,6 +135,12 @@ export interface ConvertVerifyStats {
   numbersInOutput: number;
   /** Numbers present in the output but ABSENT from the source — the fail condition. */
   fabricatedNumbers: string[];
+  /**
+   * Numbers in the source that didn't make it into the output. ADVISORY, not a
+   * failure — dropping superseded values (e.g. the 2010 figures) is usually
+   * correct. Surfaced so silent loss of a value is still visible.
+   */
+  missingNumbers?: string[];
   sourceWords: number;
   outputWords: number;
   sections: number;
