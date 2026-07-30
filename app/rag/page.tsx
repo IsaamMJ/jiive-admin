@@ -42,7 +42,9 @@ import type {
   PasteTextResponse,
 } from "./types";
 
-// Poll every 3s while any doc is queued/processing (safety net — uploads are mostly synchronous).
+// Poll every 3s while any doc is queued/processing. Uploads are ASYNC — the
+// server returns `queued` and parses in the background (~60s for a PDF via
+// LlamaParse), so this poll is how a row reaches pending_review, not a safety net.
 const POLL_MS = 3_000;
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
 const MAX_BULK_FILES = 50;
@@ -312,9 +314,6 @@ export default function KnowledgeBasePage() {
     // Strip any accepted extension, not just .pdf — otherwise a .md upload would
     // be titled "guidelines.md".
     if (!uploadTitleEdited) setUploadTitle(file.name.replace(/\.(pdf|md|markdown|txt)$/i, ""));
-    if (file.size > 5 * 1024 * 1024) {
-      toast.info("Large file — consider Bulk upload for background processing (avoids upload timeouts).");
-    }
   }
 
   async function handleUpload() {
@@ -327,10 +326,13 @@ export default function KnowledgeBasePage() {
       form.append("file", uploadFile);
       if (uploadTitle.trim()) form.append("title", uploadTitle.trim());
       // Do NOT set Content-Type manually — axios sets the multipart boundary.
-      // Large PDFs parse synchronously on the backend (Docling) and can take
-      // minutes — give this request room before axios gives up.
+      // Upload is async now: the server returns `queued` immediately and parses
+      // in the background (PDFs go through LlamaParse, ~60s). The generous
+      // timeout is just headroom for the file transfer itself.
       await api.post("/rag/documents", form, { timeout: 180_000 });
-      toast.success("Document uploaded — awaiting review.");
+      // Don't say "awaiting review" — it isn't ready to review yet. The list
+      // polls every 3s and the row moves queued → processing → pending review.
+      toast.success("Uploaded — parsing now. This takes about a minute; the row updates itself.");
       setUploadFile(null);
       setUploadTitle("");
       setUploadTitleEdited(false);
