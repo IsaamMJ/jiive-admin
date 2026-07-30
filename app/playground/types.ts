@@ -1,6 +1,6 @@
 // ── Contract types for /llm-playground endpoints ─────────────────────────────
 
-export type LlmModel = "aws" | "hf";
+export type LlmModel = "aws" | "hf" | "openai";
 
 // POST /llm-playground/chat ───────────────────────────────────────────────────
 
@@ -93,7 +93,7 @@ export interface SseDonePayload {
 }
 
 export interface SseErrorPayload {
-  error: "aws_offline" | "hf_not_configured" | "provider_error" | string;
+  error: "aws_offline" | "hf_not_configured" | "openai_not_configured" | "provider_error" | string;
   message: string;
 }
 

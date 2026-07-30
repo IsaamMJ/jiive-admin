@@ -91,7 +91,7 @@ export default function PlaygroundPage() {
   // Guard: consume ?userId= deep-link exactly once on mount.
   const deepLinkConsumedRef = useRef(false);
 
-  const [model, setModel] = useState<LlmModel>("hf");
+  const [model, setModel] = useState<LlmModel>("openai");
   const [useRag, setUseRag] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -407,6 +407,7 @@ export default function PlaygroundPage() {
               err.error === "aws_offline" ||
               (currentModel === "aws" && /request timed out|timed out/i.test(msg));
             const isHfUnconfigured = err.error === "hf_not_configured";
+            const isOpenAiUnconfigured = err.error === "openai_not_configured";
             const isPatientNotFound = err.error === "patient_not_found";
             const isUnexpectedClose =
               err.error === "provider_error" && msg === "Connection closed unexpectedly.";
@@ -419,6 +420,8 @@ export default function PlaygroundPage() {
               ? "MedGemma box is offline — start it to use AWS."
               : isHfUnconfigured
                 ? "HuggingFace endpoint is not configured."
+                : isOpenAiUnconfigured
+                ? "OpenAI is not configured on this environment."
                 : isPatientNotFound
                   ? "That patient could not be found — pick another."
                   : isWarming

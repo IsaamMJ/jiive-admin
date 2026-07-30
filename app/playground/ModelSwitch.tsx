@@ -49,7 +49,7 @@ export function ModelSwitch({ model, awsState, hf, disabled, onChange }: Props) 
     <div className="flex items-center gap-2">
       <span className="text-xs font-medium text-muted-foreground">Model</span>
       <InfoTip
-        label="Both options run the same medical AI (MedGemma) — AWS is the dedicated server, HuggingFace is a hosted backup. Answers should be similar."
+        label="OpenAI runs the exact model Lumi uses with patients (gpt-4o-mini), so it's the closest thing to a real rehearsal — and it needs no server started. AWS MedGemma and HuggingFace both run the specialist medical model MedGemma; AWS is the dedicated server, HuggingFace a hosted backup."
         side="bottom"
       />
       <div
@@ -57,6 +57,9 @@ export function ModelSwitch({ model, awsState, hf, disabled, onChange }: Props) 
         aria-label="Model"
         className="flex items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5"
       >
+        {/* OpenAI first — it's the model patients actually get, and unlike the
+            other two it needs no box started, so it's the safe default. */}
+        {btn("openai", "OpenAI (Lumi's)", disabled ?? false, "OpenAI not configured")}
         {btn("hf", "HuggingFace", hfDisabled, "HuggingFace endpoint not configured")}
         {btn("aws", "AWS MedGemma", awsDisabled, "AWS instance not configured")}
       </div>
