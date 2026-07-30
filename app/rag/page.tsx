@@ -53,6 +53,20 @@ const MAX_PASTE_CHARS = 500_000;
 const MIN_PASTE_CHARS = 200;
 const MIN_PASTE_WORDS = 50;
 
+/**
+ * What upload() accepts. Markdown/text route through the markdown pipeline
+ * (heading-aware chunking, real section citations) rather than the PDF text
+ * extractor. Extension check only — the server still sniffs content, so a PDF
+ * renamed .md is rejected there.
+ */
+const ACCEPTED_UPLOAD_EXTENSIONS = [".pdf", ".md", ".markdown", ".txt"] as const;
+const UPLOAD_ACCEPT_ATTR = ACCEPTED_UPLOAD_EXTENSIONS.join(",");
+
+function isAcceptedUpload(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return ACCEPTED_UPLOAD_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 function isInProgress(status: DocStatus): boolean {
   return status === "queued" || status === "processing";
 }
@@ -283,8 +297,8 @@ export default function KnowledgeBasePage() {
 
   function handleFileSelect(file: File | null) {
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      toast.error("Only PDF files are accepted.");
+    if (!isAcceptedUpload(file.name)) {
+      toast.error("Accepted: PDF, Markdown (.md/.markdown) or plain text (.txt).");
       return;
     }
     if (file.size > MAX_FILE_BYTES) {
@@ -295,7 +309,9 @@ export default function KnowledgeBasePage() {
     // Auto-fill the title from the filename unless the operator has typed their
     // own. Always re-sync on a new file so a switched file can't inherit a stale
     // title from a previous selection.
-    if (!uploadTitleEdited) setUploadTitle(file.name.replace(/\.pdf$/i, ""));
+    // Strip any accepted extension, not just .pdf — otherwise a .md upload would
+    // be titled "guidelines.md".
+    if (!uploadTitleEdited) setUploadTitle(file.name.replace(/\.(pdf|md|markdown|txt)$/i, ""));
     if (file.size > 5 * 1024 * 1024) {
       toast.info("Large file — consider Bulk upload for background processing (avoids upload timeouts).");
     }
@@ -391,9 +407,9 @@ export default function KnowledgeBasePage() {
       toast.error(`Maximum ${MAX_BULK_FILES} files per bulk upload.`);
       return;
     }
-    const selected = Array.from(files).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+    const selected = Array.from(files).filter((f) => isAcceptedUpload(f.name));
     if (selected.length < files.length) {
-      toast.error("Non-PDF files were ignored.");
+      toast.error(`${files.length - selected.length} unsupported file(s) ignored — PDF, .md, .markdown and .txt only.`);
     }
     setBulkFiles(selected);
   }
@@ -639,10 +655,11 @@ export default function KnowledgeBasePage() {
                   and the whole reference list. Only paste → Convert is cleaned, so
                   say so here rather than let the quality gap stay invisible. */}
               <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-                PDF text isn&apos;t cleaned — running headers, DOIs, copyright lines and the reference
-                list end up in the chunks. If you can copy the content from a web page instead, use{" "}
-                <strong>Convert web content</strong> below: it strips that furniture and checks every
-                number against your source.
+                <strong>PDFs only:</strong> PDF text isn&apos;t cleaned — running headers, DOIs,
+                copyright lines and the reference list end up in the chunks. Prefer{" "}
+                <strong>Convert web content</strong> below (strips that furniture and checks every
+                number against your source), or upload a <strong>.md</strong> file — Markdown and text
+                go through the clean pipeline with real section citations.
               </p>
 
               <div
@@ -662,12 +679,12 @@ export default function KnowledgeBasePage() {
                 ) : (
                   <span>Drop a PDF here or click to browse</span>
                 )}
-                <span className="text-xs opacity-70">PDF only · max 25 MB</span>
+                <span className="text-xs opacity-70">PDF, Markdown or text · max 25 MB</span>
               </div>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,application/pdf"
+                accept={UPLOAD_ACCEPT_ATTR}
                 className="hidden"
                 onChange={(e) => handleFileSelect(e.target.files?.[0] ?? null)}
               />
@@ -735,7 +752,7 @@ export default function KnowledgeBasePage() {
                 <input
                   ref={bulkInputRef}
                   type="file"
-                  accept=".pdf,application/pdf"
+                  accept={UPLOAD_ACCEPT_ATTR}
                   multiple
                   className="hidden"
                   onChange={(e) => handleBulkFileSelect(e.target.files)}
@@ -766,7 +783,7 @@ export default function KnowledgeBasePage() {
                 </div>
               )}
 
-              <p className="text-xs text-muted-foreground">PDF only · up to {MAX_BULK_FILES} files per batch</p>
+              <p className="text-xs text-muted-foreground">PDF, .md, .markdown or .txt · up to {MAX_BULK_FILES} files per batch</p>
             </div>
           </CardContent>
         </Card>
