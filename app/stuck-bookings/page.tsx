@@ -19,6 +19,7 @@ import {
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { RescheduleDialog } from "./RescheduleDialog";
+import { OrphanReports } from "./OrphanReports";
 import {
   type StuckBooking, type StuckBookingsResponse,
   whyStuck, rupees, toYmd, RETRY_CAP,
@@ -197,6 +198,13 @@ export default function StuckBookingsPage() {
             Refresh
           </Button>
         </div>
+
+        {/* Unlinked lab reports — a different defect with a different fix, so it
+            gets its own section rather than being merged into the table below. A
+            stuck booking HAS a booking row and needs a retry; these have none,
+            and need an operator to supply the missing identity. Renders only when
+            something is stranded. */}
+        <OrphanReports onLinked={() => load({ silent: true })} />
 
         {loading ? (
           <div className="flex flex-col gap-2">
