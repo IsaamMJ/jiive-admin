@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 import {
   type OrphanReport, type OrphanReportList, type OrphanPreflight,
   type OrphanAdoptRequest, type OrphanAdoptResponse, type OrphanSubject,
-  ORPHAN_DOB_RULE, isDeferredNotFailed,
+  ORPHAN_DOB_RULE, isDeferredNotFailed, collectionDateFromHint,
 } from "./types";
 
 /**
@@ -153,6 +153,27 @@ function AdoptDialog({
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<OrphanAdoptResponse | null>(null);
 
+  // Preflight fetch, reusable so an our-side failure can be retried on demand.
+  // Still never polled — it costs two live vendor calls.
+  const runPreflight = useCallback((r: OrphanReport) => {
+    setPreLoading(true);
+    return api
+      .get<OrphanPreflight>(`/thyrocare/orphan-reports/${encodeURIComponent(r.orderId)}`)
+      .then((resp) => {
+        setPre(resp.data);
+        if (resp.data.leadId) setLeadId((cur) => cur || resp.data.leadId || "");
+        // Cosmetic fields only. NOT name, NOT gender, and above all NOT dob —
+        // those must come from a document the operator is looking at.
+        if (resp.data.patientHint.city) setCity(resp.data.patientHint.city);
+        if (resp.data.patientHint.state) setState(resp.data.patientHint.state);
+        if (resp.data.patientHint.pincode) setPincode(String(resp.data.patientHint.pincode));
+      })
+      .catch(() => toast.error("Could not check this report with Thyrocare."))
+      .finally(() => setPreLoading(false));
+  }, []);
+
+  const onRetryPreflight = useCallback(() => { if (report) runPreflight(report); }, [report, runPreflight]);
+
   // Preflight on open — once per row, never polled (it hits the vendor API).
   useEffect(() => {
     if (!report) return;
@@ -160,20 +181,7 @@ function AdoptDialog({
     setLeadId(report.leadId ?? "");
     setPhone(""); setPatientName(""); setDob(""); setGender(""); setSubject("self");
     setRelationship(""); setCity(""); setState(""); setPincode("");
-    setPreLoading(true);
-    api
-      .get<OrphanPreflight>(`/thyrocare/orphan-reports/${encodeURIComponent(report.orderId)}`)
-      .then((r) => {
-        setPre(r.data);
-        if (!leadId && r.data.leadId) setLeadId(r.data.leadId);
-        // Cosmetic fields only. NOT name, NOT gender, and above all NOT dob —
-        // those must come from a document the operator is looking at.
-        if (r.data.patientHint.city) setCity(r.data.patientHint.city);
-        if (r.data.patientHint.state) setState(r.data.patientHint.state);
-        if (r.data.patientHint.pincode) setPincode(String(r.data.patientHint.pincode));
-      })
-      .catch(() => toast.error("Could not check this report with Thyrocare."))
-      .finally(() => setPreLoading(false));
+    runPreflight(report);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [report]);
 
@@ -211,6 +219,11 @@ function AdoptDialog({
       ...(city.trim() ? { city: city.trim() } : {}),
       ...(state.trim() ? { state: state.trim() } : {}),
       ...(pincode.trim() ? { pincode: Number(pincode.trim()) } : {}),
+      // The real draw date. Omitted, the booking is dated today and looks like an
+      // abandoned same-day appointment — that fired a false no-show page live.
+      ...(collectionDateFromHint(pre?.patientHint.collectionDate)
+        ? { collectionDate: collectionDateFromHint(pre?.patientHint.collectionDate) }
+        : {}),
       notify: true,
       dryRun,
     };
@@ -276,10 +289,47 @@ function AdoptDialog({
                 )}
               </Banner>
             ) : !pre.reportAvailable ? (
-              <Banner tone="info" icon={<Clock size={15} />} title="Report not ready yet">
-                Thyrocare hasn&apos;t published this report. This is normal soon after collection —
-                check back later. Nothing to do now.
-              </Banner>
+              // `ourSide` decides the whole message: our failed request is worth
+              // retrying, Thyrocare's "no" is not. Never blame the vendor for our
+              // own timeout — that's what nearly sent a ticket to them.
+              pre.reportDiagnostic?.ourSide ? (
+                <Banner tone="warn" icon={<AlertTriangle size={15} />} title="We couldn't fetch the report">
+                  <p>
+                    The request to Thyrocare failed on our side
+                    {pre.reportDiagnostic.kind ? ` (${pre.reportDiagnostic.kind.replace(/_/g, " ")})` : ""}.
+                    The report may well be fine — this is worth retrying.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2"
+                    disabled={preLoading}
+                    onClick={onRetryPreflight}
+                  >
+                    {preLoading ? <Loader2 size={13} className="mr-1.5 animate-spin" /> : null}
+                    Try again
+                  </Button>
+                </Banner>
+              ) : pre.reportDiagnostic ? (
+                <Banner tone="info" icon={<Info size={15} />} title="Thyrocare has no report for this order">
+                  <p>
+                    They answered
+                    {pre.reportDiagnostic.httpStatus ? ` (${pre.reportDiagnostic.httpStatus})` : ""} — this
+                    isn&apos;t a connection problem, so retrying gives the same answer. Usually a demo or
+                    mistyped order that never existed at Thyrocare.
+                  </p>
+                  {pre.reportDiagnostic.vendorBody && (
+                    <p className="mt-1 break-all font-mono text-[11px]">
+                      {pre.reportDiagnostic.vendorBody}
+                    </p>
+                  )}
+                </Banner>
+              ) : (
+                <Banner tone="info" icon={<Clock size={15} />} title="Report not ready yet">
+                  Thyrocare hasn&apos;t published this report. Normal soon after collection — check back
+                  later. Nothing to do now.
+                </Banner>
+              )
             ) : !pre.bioAgeReady ? (
               <Banner tone="warn" icon={<AlertTriangle size={15} />} title="Bio-age can't be calculated from this report">
                 <p>

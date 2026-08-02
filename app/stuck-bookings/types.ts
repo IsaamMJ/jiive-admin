@@ -132,6 +132,22 @@ export interface OrphanPreflight {
   patientHint: OrphanPatientHint;
   /** Vendor lookup failed — patientHint will be empty. Soft warning, not fatal. */
   vendorLookupError: string | null;
+  /**
+   * Why the report couldn't be fetched. Present when reportAvailable is false.
+   *
+   * `ourSide` is the field that decides what the operator does next, so it leads
+   * the UI: true = our request failed (e.g. the 10s timeout that stranded
+   * VL0D0FDC — retry is worth it); false = Thyrocare answered and said no
+   * (404 DATA_NOT_FOUND — retrying just repeats the same answer).
+   */
+  reportDiagnostic?: {
+    step: string;
+    kind: string;
+    httpStatus?: number | null;
+    vendorBody?: string | null;
+    ourSide: boolean;
+    retryable: boolean;
+  } | null;
 }
 
 export type OrphanSubject = "self" | "family_member";
@@ -149,8 +165,25 @@ export interface OrphanAdoptRequest {
   city?: string;
   state?: string;
   pincode?: number;
+  /**
+   * The real draw date, YYYY-MM-DD, from patientHint.collectionDate. Without it
+   * the booking is dated today — which on the first live adopt fired a false
+   * phlebo-no-show page, because a booking "today" with no phlebo looks abandoned.
+   */
+  collectionDate?: string;
   notify: boolean;
   dryRun: boolean;
+}
+
+/**
+ * Vendor hint → the YYYY-MM-DD the server validates. Sliced, never parsed via
+ * Date: the hint carries an IST offset ("2026-07-24T08:20:00+05:30") and letting
+ * a UTC-based Date touch it can walk the draw date back a day.
+ */
+export function collectionDateFromHint(hint: string | null | undefined): string | undefined {
+  if (!hint) return undefined;
+  const ymd = hint.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : undefined;
 }
 
 export interface OrphanAdoptResponse {
