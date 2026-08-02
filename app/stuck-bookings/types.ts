@@ -117,10 +117,34 @@ export interface OrphanPatientHint {
   collectionDate: string | null;
 }
 
+/**
+ * One person on the order. A Thyrocare order can cover several people — each has
+ * their own lead and their own report XML.
+ *
+ * `age` is the vendor's age, NEVER a DOB — and on a shared order the danger is
+ * sharper than usual: VL21989C carries a 24-year-old and a 50-year-old, so
+ * carrying the wrong row's details into the form is an easy mistake with a
+ * clinical consequence.
+ */
+export interface OrphanPatient {
+  leadId: string;
+  name: string | null;
+  age: number | null;
+  gender: string | null;
+  isReportAvailable: boolean;
+  adopted: boolean;
+  linkedBookingId: string | null;
+}
+
 export interface OrphanPreflight {
   orderId: string;
   leadId: string | null;
+  /** Answers for the LEAD asked about, not the whole order. */
   alreadyLinked: boolean;
+  patientCount?: number;
+  multiPatient?: boolean;
+  /** Every person on the order. Absent on older payloads — fall back to one. */
+  patients?: OrphanPatient[];
   linkedBookingId: string | null;
   /** False = Thyrocare hasn't published the report yet. Normal early state, not an error. */
   reportAvailable: boolean;
@@ -204,6 +228,13 @@ export interface OrphanAdoptResponse {
   notified: boolean;
   resultId: string | null;
   pipelineError: string | null;
+  /**
+   * Everyone on this order who STILL has no booking after this adopt. Empty on a
+   * normal single-patient order. Non-empty means the job is NOT finished — the
+   * operator has linked one person and someone else on the same order is still
+   * waiting for results they paid for.
+   */
+  remainingPatients?: OrphanPatient[];
 }
 
 /**

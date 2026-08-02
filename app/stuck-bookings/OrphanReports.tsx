@@ -135,6 +135,12 @@ function AdoptDialog({
 }: { report: OrphanReport | null; onClose: () => void; onLinked: () => void }) {
   const [pre, setPre] = useState<OrphanPreflight | null>(null);
   const [preLoading, setPreLoading] = useState(false);
+  /**
+   * Which person on the order we're linking. An order can cover several people,
+   * each with their own lead and report, so every field below belongs to THIS
+   * patient — never to the order as a whole.
+   */
+  const [selectedLead, setSelectedLead] = useState<string | null>(null);
 
   const [leadId, setLeadId] = useState("");
   const [phone, setPhone] = useState("");
@@ -161,6 +167,16 @@ function AdoptDialog({
       .get<OrphanPreflight>(`/thyrocare/orphan-reports/${encodeURIComponent(r.orderId)}`)
       .then((resp) => {
         setPre(resp.data);
+        // Auto-select only when there is genuinely one person to link. With
+        // several, the operator must choose — picking for them is how the wrong
+        // patient's details get filed.
+        const list = resp.data.patients ?? [];
+        const pending = list.filter((p) => !p.adopted);
+        setSelectedLead(
+          list.length <= 1 ? (list[0]?.leadId ?? resp.data.leadId ?? null)
+          : pending.length === 1 ? pending[0].leadId
+          : null,
+        );
         if (resp.data.leadId) setLeadId((cur) => cur || resp.data.leadId || "");
         // Cosmetic fields only. NOT name, NOT gender, and above all NOT dob —
         // those must come from a document the operator is looking at.
@@ -189,6 +205,20 @@ function AdoptDialog({
   // phone number, change it, and adopt against the stale approval.
   function touched<T>(setter: (v: T) => void) {
     return (v: T) => { setter(v); setPlan(null); setReuseAck(false); };
+  }
+
+  const patients = pre?.patients ?? [];
+  const multi = !!pre?.multiPatient && patients.length > 1;
+  const selected = patients.find((p) => p.leadId === selectedLead) ?? null;
+  const unadopted = patients.filter((p) => !p.adopted);
+
+  /** Switch patient — wipes every identity field so nothing carries across. */
+  function choosePatient(leadIdValue: string) {
+    setSelectedLead(leadIdValue);
+    setLeadId(leadIdValue);
+    setPhone(""); setPatientName(""); setDob(""); setGender("");
+    setSubject("self"); setRelationship("");
+    setPlan(null); setReuseAck(false); setBioAgeAck(false);
   }
 
   const blockedReason =
@@ -277,7 +307,11 @@ function AdoptDialog({
 
         {/* ── Outcome ─────────────────────────────────────────────────────── */}
         {done ? (
-          <AdoptOutcome result={done} onClose={onClose} />
+          <AdoptOutcome
+            result={done}
+            onClose={onClose}
+            onAdoptNext={(lead) => { setDone(null); choosePatient(lead); if (report) runPreflight(report); }}
+          />
         ) : pre && !preLoading ? (
           <div className="flex flex-col gap-4">
             {/* ── Preflight verdict ──────────────────────────────────────── */}
@@ -365,7 +399,68 @@ function AdoptDialog({
               </Banner>
             )}
 
-            {!pre.alreadyLinked && pre.reportAvailable && (
+            {/* This order covers several people. Each is a separate customer with
+                their own report — an operator must never leave thinking they're
+                done while someone here still has no result. */}
+            {multi && (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                  This order covers {patients.length} people — each needs linking separately
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {unadopted.length === 0
+                    ? "All of them are linked. Nothing left to do here."
+                    : `${unadopted.length} still ${unadopted.length === 1 ? "has" : "have"} no result.`}
+                </p>
+                <div className="mt-2 flex flex-col gap-1.5">
+                  {patients.map((p) => {
+                    const active = p.leadId === selectedLead;
+                    return (
+                      <button
+                        key={p.leadId}
+                        type="button"
+                        disabled={p.adopted}
+                        onClick={() => choosePatient(p.leadId)}
+                        className={cn(
+                          "flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition-colors",
+                          p.adopted
+                            ? "cursor-default border-border bg-background/60 opacity-70"
+                            : active
+                              ? "border-primary bg-background"
+                              : "border-border bg-background hover:bg-accent",
+                        )}
+                      >
+                        {p.adopted
+                          ? <CheckCircle2 size={14} className="shrink-0 text-green-500" />
+                          : <span className={cn("h-2 w-2 shrink-0 rounded-full", active ? "bg-primary" : "bg-amber-500")} />}
+                        <span className="flex flex-col">
+                          <span className="font-medium">{p.name ?? "Unnamed patient"}</span>
+                          <span className="font-mono text-[10px] text-muted-foreground">
+                            {p.leadId} · {p.gender ?? "—"} · age {p.age ?? "—"}
+                            {!p.isReportAvailable && " · report not ready"}
+                          </span>
+                        </span>
+                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                          {p.adopted ? "Linked" : active ? "Linking now" : "Link"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Leads on one order differ by a single digit — the reason the
+                    second patient stayed hidden. Say it out loud. */}
+                <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+                  Their lead IDs look almost identical and their ages differ. Fill each person&apos;s form
+                  from their own documents — don&apos;t carry details across.
+                </p>
+              </div>
+            )}
+
+            {multi && !selected && unadopted.length > 0 && (
+              <p className="text-xs text-muted-foreground">Pick a person above to link them.</p>
+            )}
+
+            {!pre.alreadyLinked && pre.reportAvailable && (!multi || !!selected) && (
               <>
                 {/* ── Identity form + vendor hint side by side ───────────── */}
                 <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
@@ -422,17 +517,21 @@ function AdoptDialog({
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       Thyrocare says
                     </p>
+                    {/* On a shared order this MUST be the selected person's row,
+                        not the order-level hint — otherwise the 24-year-old's
+                        details sit beside the 50-year-old's form. */}
                     <p className="mt-1 text-[11px] text-muted-foreground">
-                      Compare — don&apos;t copy blindly.
+                      {selected ? "About this person only. Compare — don't copy blindly." : "Compare — don't copy blindly."}
                     </p>
                     <dl className="mt-2 space-y-1 text-[11px]">
-                      <HintRow k="Name" v={hint?.name} />
-                      <HintRow k="Age" v={hint?.age != null ? `${hint.age}` : null} warn />
-                      <HintRow k="Gender" v={hint?.gender} />
+                      <HintRow k="Name" v={selected?.name ?? hint?.name} />
+                      <HintRow k="Age" v={(selected?.age ?? hint?.age) != null ? `${selected?.age ?? hint?.age}` : null} warn />
+                      <HintRow k="Gender" v={selected?.gender ?? hint?.gender} />
+                      {selected && <HintRow k="Lead" v={selected.leadId} />}
                       <HintRow k="City" v={hint?.city} />
                       <HintRow k="Collected" v={hint?.collectionDate} />
                     </dl>
-                    {hint?.age != null && (
+                    {(selected?.age ?? hint?.age) != null && (
                       <p className="mt-2 border-t border-border pt-2 text-[11px] text-amber-600 dark:text-amber-400">
                         Don&apos;t turn this age into a date of birth — it would change their bio-age.
                       </p>
@@ -516,12 +615,37 @@ function AdoptDialog({
 }
 
 /** Rule 3 lives here: a deferral is reported as progress, never as a red failure. */
-function AdoptOutcome({ result, onClose }: { result: OrphanAdoptResponse; onClose: () => void }) {
+function AdoptOutcome({
+  result, onClose, onAdoptNext,
+}: { result: OrphanAdoptResponse; onClose: () => void; onAdoptNext: (leadId: string) => void }) {
   const deferred = isDeferredNotFailed(result);
   const ok = result.success;
+  // Someone else on this order is still waiting for results they paid for. That
+  // outranks the success we just had — the job isn't done.
+  const remaining = (result.remainingPatients ?? []).filter((p) => !p.adopted);
 
   return (
     <div className="flex flex-col gap-3">
+      {remaining.length > 0 && (ok || deferred) && (
+        <Banner tone="warn" icon={<AlertTriangle size={15} />} title="Not finished — someone else on this order has no result">
+          <p>
+            {remaining.length === 1 ? "This person is" : "These people are"} on the same order and still
+            {remaining.length === 1 ? " has" : " have"} no booking:
+          </p>
+          <ul className="mt-1.5 flex flex-col gap-1.5">
+            {remaining.map((p) => (
+              <li key={p.leadId} className="flex items-center gap-2">
+                <span className="font-medium text-foreground">{p.name ?? "Unnamed patient"}</span>
+                <span className="font-mono text-[10px]">{p.leadId}</span>
+                <Button size="sm" variant="outline" className="ml-auto h-6 text-[11px]" onClick={() => onAdoptNext(p.leadId)}>
+                  Link them now
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </Banner>
+      )}
+
       {ok ? (
         <Banner tone="ok" icon={<CheckCircle2 size={15} />} title="Linked">
           The report is attached to the customer.
