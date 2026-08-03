@@ -86,37 +86,6 @@ export const rupees = (paise: number) =>
 //   POST /thyrocare/orphan-reports/:orderId/adopt
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface OrphanReport {
-  eventId: string;
-  orderId: string;
-  /** Null on older payloads — the operator must then type it in. */
-  leadId: string | null;
-  receivedAt: string;
-  processed: boolean;
-  error: string | null;
-  retryCount: number;
-}
-
-export interface OrphanReportList {
-  count?: number;
-  reports: OrphanReport[];
-}
-
-/**
- * What the vendor says about the patient. A CHECK for the operator to compare
- * against, NEVER a source of defaults — see ORPHAN_DOB_RULE.
- */
-export interface OrphanPatientHint {
-  name: string | null;
-  /** Deliberately unused for prefill. An age cannot yield a DOB. */
-  age: number | null;
-  gender: string | null;
-  city: string | null;
-  state: string | null;
-  pincode: number | null;
-  collectionDate: string | null;
-}
-
 /**
  * One person on the order. A Thyrocare order can cover several people — each has
  * their own lead and their own report XML.
@@ -134,6 +103,55 @@ export interface OrphanPatient {
   isReportAvailable: boolean;
   adopted: boolean;
   linkedBookingId: string | null;
+}
+
+export interface OrphanReport {
+  eventId: string;
+  orderId: string;
+  /**
+   * ⚠️ The lead the WEBHOOK carried — NOT necessarily anyone still waiting. On a
+   * partially-adopted order it is usually the person already DONE (on VL21989C
+   * it is Shahina, while Fareetha is the one still owed). NEVER adopt with this.
+   * Adopt from `unadoptedPatients[].leadId`.
+   */
+  leadId: string | null;
+  receivedAt: string;
+  processed: boolean;
+  error: string | null;
+  retryCount: number;
+  /**
+   * How many people on this order still have no booking.
+   * `null` means UNRESOLVED, not one and not zero — the roster is only fetched
+   * for orders where someone has already been adopted, to keep this polled
+   * endpoint cheap. Render null as "1+ waiting".
+   */
+  patientsWaiting?: number | null;
+  multiPatient?: boolean;
+  /** The people still owed a result. The ONLY safe source of a lead to adopt. */
+  unadoptedPatients?: OrphanPatient[];
+}
+
+export interface OrphanReportList {
+  /** Orders. Use peopleWaiting for anything operator-facing. */
+  count?: number;
+  /** People still owed results — the number that actually matters. */
+  peopleWaiting?: number;
+  reports: OrphanReport[];
+}
+
+/**
+ * What the vendor says about the patient. A CHECK for the operator to compare
+ * against, NEVER a source of defaults — see ORPHAN_DOB_RULE.
+ */
+export interface OrphanPatientHint {
+  name: string | null;
+  /** Deliberately unused for prefill. An age cannot yield a DOB. */
+  age: number | null;
+  gender: string | null;
+  city: string | null;
+  state: string | null;
+  pincode: number | null;
+  collectionDate: string | null;
 }
 
 export interface OrphanPreflight {

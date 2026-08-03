@@ -48,13 +48,18 @@ import {
  */
 export function OrphanReports({ onLinked }: { onLinked: () => void }) {
   const [reports, setReports] = useState<OrphanReport[]>([]);
+  const [peopleWaiting, setPeopleWaiting] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<OrphanReport | null>(null);
 
   const load = useCallback(() => {
     return api
       .get<OrphanReportList>("/thyrocare/orphan-reports")
-      .then((r) => setReports(r.data.reports ?? []))
+      .then((r) => {
+        setReports(r.data.reports ?? []);
+        // People, not orders — one order can hold two of them.
+        setPeopleWaiting(r.data.peopleWaiting ?? null);
+      })
       .catch(() => { /* silent — the section just stays hidden */ })
       .finally(() => setLoading(false));
   }, []);
@@ -71,7 +76,10 @@ export function OrphanReports({ onLinked }: { onLinked: () => void }) {
         <FileWarning size={16} className="mt-0.5 shrink-0 text-amber-500" />
         <div>
           <h2 className="text-sm font-semibold">
-            Unlinked lab reports ({reports.length})
+            Unlinked lab reports —{" "}
+            {peopleWaiting != null
+              ? `${peopleWaiting} ${peopleWaiting === 1 ? "person" : "people"} waiting`
+              : `${reports.length} ${reports.length === 1 ? "order" : "orders"}`}
           </h2>
           <p className="max-w-2xl text-xs text-muted-foreground">
             Results that arrived with no booking attached — almost always an order placed directly on
@@ -86,7 +94,7 @@ export function OrphanReports({ onLinked }: { onLinked: () => void }) {
           <TableHeader>
             <TableRow>
               <TableHead>Order ID</TableHead>
-              <TableHead>Lead ID</TableHead>
+              <TableHead>Still waiting</TableHead>
               <TableHead>Arrived</TableHead>
               <TableHead>Why it&apos;s stuck</TableHead>
               <TableHead className="text-right">Action</TableHead>
@@ -96,8 +104,32 @@ export function OrphanReports({ onLinked }: { onLinked: () => void }) {
             {reports.map((r) => (
               <TableRow key={r.eventId}>
                 <TableCell className="font-mono text-xs font-medium">{r.orderId}</TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">
-                  {r.leadId ?? <span className="italic">not supplied</span>}
+                {/* Who is still owed, never the row's own leadId — on a partly
+                    adopted order that's the person already DONE. */}
+                <TableCell className="text-xs">
+                  {r.unadoptedPatients && r.unadoptedPatients.length > 0 ? (
+                    <div className="flex flex-col gap-0.5">
+                      {r.unadoptedPatients.map((p) => (
+                        <span key={p.leadId}>
+                          {p.name ?? "Unnamed"}{" "}
+                          <span className="font-mono text-[10px] text-muted-foreground">{p.leadId}</span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    // null = unresolved, not one and not none. Never print "null",
+                    // never imply zero — someone is waiting either way.
+                    <span className="text-muted-foreground">
+                      {r.patientsWaiting == null
+                        ? "1+ waiting"
+                        : `${r.patientsWaiting} waiting`}
+                    </span>
+                  )}
+                  {r.multiPatient && (
+                    <span className="ml-1 rounded bg-amber-500/20 px-1 text-[10px] text-amber-600 dark:text-amber-400">
+                      multi
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="text-xs">
                   {new Date(r.receivedAt).toLocaleDateString()}{" "}
@@ -177,7 +209,10 @@ function AdoptDialog({
           : pending.length === 1 ? pending[0].leadId
           : null,
         );
-        if (resp.data.leadId) setLeadId((cur) => cur || resp.data.leadId || "");
+        // Seed the lead ONLY when there is no roster. With one, the lead must
+        // come from the chosen patient — the order-level lead is the webhook's,
+        // which on a partially-adopted order is the person already done.
+        if (list.length === 0 && resp.data.leadId) setLeadId((cur) => cur || resp.data.leadId || "");
         // Cosmetic fields only. NOT name, NOT gender, and above all NOT dob —
         // those must come from a document the operator is looking at.
         if (resp.data.patientHint.city) setCity(resp.data.patientHint.city);
@@ -194,7 +229,7 @@ function AdoptDialog({
   useEffect(() => {
     if (!report) return;
     setPre(null); setPlan(null); setDone(null); setBioAgeAck(false); setReuseAck(false);
-    setLeadId(report.leadId ?? "");
+    setLeadId(""); // never the row lead — see OrphanReport.leadId
     setPhone(""); setPatientName(""); setDob(""); setGender(""); setSubject("self");
     setRelationship(""); setCity(""); setState(""); setPincode("");
     runPreflight(report);
@@ -221,8 +256,18 @@ function AdoptDialog({
     setPlan(null); setReuseAck(false); setBioAgeAck(false);
   }
 
+  /**
+   * `alreadyLinked` answers for the lead the WEBHOOK carried — on a partially
+   * adopted order that's the person already DONE. Judging the order by it hides
+   * the form from the person still owed a result. When a roster exists, the only
+   * honest question is whether THIS patient is adopted.
+   */
+  const nothingLeftToDo = patients.length > 0
+    ? unadopted.length === 0
+    : !!pre?.alreadyLinked;
+
   const blockedReason =
-    pre?.alreadyLinked ? "This report is already linked to a booking."
+    nothingLeftToDo ? "Everyone on this order is already linked."
     : pre && !pre.reportAvailable ? "Thyrocare hasn't published this report yet."
     : null;
 
@@ -315,7 +360,7 @@ function AdoptDialog({
         ) : pre && !preLoading ? (
           <div className="flex flex-col gap-4">
             {/* ── Preflight verdict ──────────────────────────────────────── */}
-            {pre.alreadyLinked ? (
+            {nothingLeftToDo ? (
               <Banner tone="info" icon={<CheckCircle2 size={15} />} title="Already linked">
                 Someone has already linked this report.
                 {pre.linkedBookingId && (
@@ -460,7 +505,7 @@ function AdoptDialog({
               <p className="text-xs text-muted-foreground">Pick a person above to link them.</p>
             )}
 
-            {!pre.alreadyLinked && pre.reportAvailable && (!multi || !!selected) && (
+            {!nothingLeftToDo && pre.reportAvailable && (!multi || !!selected) && (
               <>
                 {/* ── Identity form + vendor hint side by side ───────────── */}
                 <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
