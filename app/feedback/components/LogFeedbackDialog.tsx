@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
-import { feedbackErrorMessage, listUserBookings, listUsersForPicker, logFeedback } from "../api";
+import { feedbackErrorMessage, listUserBookings, listUsersForPicker, logFeedback, USERS_PICKER_LIMIT } from "../api";
 import {
   CHANNEL_EXPLAINER,
   CHANNEL_HINT,
@@ -49,6 +49,10 @@ const MAX_MATCHES = 8;
 export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
   // Customer picker.
   const [users, setUsers] = useState<PickableUser[] | null>(null);
+  // True when GET /users came back with exactly the requested page size — the
+  // only signal available (the payload carries no total) that more customers
+  // exist than were fetched. See listUsersForPicker in ../api.
+  const [usersTruncated, setUsersTruncated] = useState(false);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [usersLoading, setUsersLoading] = useState(false);
   const [query, setQuery] = useState("");
@@ -105,7 +109,9 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
     const t = setTimeout(() => {
       setUsersLoading(true);
       listUsersForPicker()
-        .then((u) => { if (!cancelled) { setUsers(u); setUsersError(null); } })
+        .then(({ users: u, truncated }) => {
+          if (!cancelled) { setUsers(u); setUsersTruncated(truncated); setUsersError(null); }
+        })
         .catch((e) => { if (!cancelled) setUsersError(feedbackErrorMessage(e)); })
         .finally(() => { if (!cancelled) setUsersLoading(false); });
     }, 0);
@@ -223,6 +229,13 @@ export function LogFeedbackDialog({ open, onOpenChange, onLogged }: Props) {
                 ) : query.trim() !== "" && matches.length === 0 && !usersLoading ? (
                   <span className="text-xs text-muted-foreground">
                     No customer matches “{query.trim()}”.
+                    {usersTruncated && (
+                      // GET /users has no total, so we can't tell if this customer
+                      // exists outside the first {limit} we fetched — "no matches" here
+                      // is "not found in what loaded", never a claim they don't exist.
+                      <> Only the first {USERS_PICKER_LIMIT} customers are searched here — this may
+                      just mean they weren&apos;t in that batch.</>
+                    )}
                   </span>
                 ) : matches.length > 0 ? (
                   <ul className="flex max-h-56 flex-col overflow-y-auto rounded-lg border border-border">

@@ -105,11 +105,24 @@ export default function ResultsPage() {
                       })()}
                     </TableCell>
                     <TableCell className="capitalize">{r.testType.replace(/_/g, " ")}</TableCell>
-                    <TableCell>{r.calculatedAge ?? "—"}</TableCell>
-                    <TableCell>{r.chronologicalAge ?? "—"}</TableCell>
-                    <TableCell className={parseFloat(r.ageDelta) < 0 ? "text-green-400" : "text-red-400"}>
-                      {r.ageDelta ?? "—"}
-                    </TableCell>
+                    {(() => {
+                      // Same "absent signal isn't a value" guard as the detail page: a FAILED
+                      // row still carries chronologicalAge: 0 (results-pipeline.service.ts
+                      // saveFailedResult never sets a real age), and parseFloat(null)/NaN
+                      // was tripping the delta colour into a false-green/red read. Only
+                      // trust these fields once the pipeline actually completed.
+                      const isCompleted = r.status === "completed";
+                      const delta = isCompleted && r.ageDelta != null ? parseFloat(r.ageDelta) : NaN;
+                      return (
+                        <>
+                          <TableCell>{isCompleted ? (r.calculatedAge ?? "—") : "—"}</TableCell>
+                          <TableCell>{isCompleted ? (r.chronologicalAge ?? "—") : "—"}</TableCell>
+                          <TableCell className={Number.isFinite(delta) ? (delta < 0 ? "text-green-400" : "text-red-400") : ""}>
+                            {isCompleted ? (r.ageDelta ?? "—") : "—"}
+                          </TableCell>
+                        </>
+                      );
+                    })()}
                     <TableCell><StatusBadge status={r.status} /></TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {new Date(r.createdAt).toLocaleDateString()}

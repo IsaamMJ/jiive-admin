@@ -16,6 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import api from "@/lib/api";
+import { isPurgedUser } from "@/lib/utils";
 import {
   type CustomerFeedParams,
   type CustomerFeedResponse,
@@ -159,20 +160,42 @@ function defaultExportName(params: ExportParams): string {
 // Lives here so ALL axios in the feedback module stays in one file.
 
 /**
+ * The page size requested from GET /users. See listUsersForPicker's `truncated`.
+ * Exported so LogFeedbackDialog's truncation caveat can't drift out of sync with
+ * the number actually requested.
+ */
+export const USERS_PICKER_LIMIT = 200;
+
+/**
  * GET /users?limit=200 — the customer picker. Filtered client-side by name/phone
  * as the operator types (no server search endpoint exists for the picker; the
  * feed's own `search` param is separate). The `/users` payload carries much more
  * per user — see app/users/page.tsx — but the picker only needs id/name/phone.
+ *
+ * Purged users (see isPurgedUser above) are dropped: you cannot log feedback
+ * against someone who has been erased.
+ *
+ * ⚠️ Verified live: the response has ONLY a `users` key — no total, no pagination
+ * metadata — so the frontend has no way to know if more customers exist beyond
+ * the limit. The only available signal is "we got back exactly `limit` rows".
+ * `truncated` surfaces that so the caller can say so rather than let "no
+ * matches" be read as "this customer doesn't exist" when they just weren't
+ * fetched. Do not fix this by raising the limit or paging client-side through
+ * the API — that's a backend-pagination fix, handed off separately.
  */
-export async function listUsersForPicker(): Promise<PickableUser[]> {
+export async function listUsersForPicker(): Promise<{ users: PickableUser[]; truncated: boolean }> {
   const r = await api.get<{ users?: Array<{ id: string; name?: string; whatsappPhone?: string }> }>(
-    "/users?limit=200"
+    `/users?limit=${USERS_PICKER_LIMIT}`
   );
-  return (r.data?.users ?? []).map((u) => ({
-    id: u.id,
-    name: u.name ?? "",
-    whatsappPhone: u.whatsappPhone ?? "",
-  }));
+  const raw = r.data?.users ?? [];
+  const users = raw
+    .filter((u) => !isPurgedUser(u.whatsappPhone))
+    .map((u) => ({
+      id: u.id,
+      name: u.name ?? "",
+      whatsappPhone: u.whatsappPhone ?? "",
+    }));
+  return { users, truncated: raw.length === USERS_PICKER_LIMIT };
 }
 
 /**

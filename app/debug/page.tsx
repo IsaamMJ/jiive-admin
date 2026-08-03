@@ -16,6 +16,7 @@ import {
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { checkPhone, type PhoneCheck } from "@/app/stuck-bookings/types";
 
 // The three things a "clear history" can remove. The account, bookings, results
 // and credits are never touched — this only resets the chat/AI side.
@@ -93,6 +94,35 @@ function EnvBool({ label, value }: { label: string; value: boolean | string | nu
       )}
     </div>
   );
+}
+
+// testChat (POST /chat) accepts two different shapes of "phone", and conflating
+// them is exactly how a real customer gets a second account:
+//   - synthetic test ids (test_*, eval_*) — verified live in
+//     admin.controller.ts:1538 (`isSynthetic`), passed through unchanged
+//   - real Indian mobiles — admin.controller.ts:1539 only checks shape
+//     (`/^\d{10,15}$/`), it does NOT add a missing country code. That normalize
+//     step lives in lumi-agent.service.ts → phone-utils.ts normalizePhone(),
+//     which also never adds `91`. WhatsApp always delivers `91…`, so a number
+//     typed without it becomes a SECOND `User` row (upsert on whatsappPhone,
+//     lumi-agent.service.ts:2184-2192) that the real conversation never merges
+//     into — same root cause we already fixed on the orphan-adopt form.
+// So: synthetic ids pass straight through, phone-shaped input is resolved to
+// the canonical 91-form with checkPhone() (same helper, same house rule as
+// stuck-bookings/OrphanReports.tsx), and anything that's neither is refused
+// client-side rather than letting the backend's shape-only check wave it through.
+const TEST_CHAT_SYNTHETIC_RE = /^(test_|eval_)/;
+
+type ChatPhoneStatus =
+  | { kind: "empty" }
+  | { kind: "synthetic" }
+  | { kind: "phone"; check: PhoneCheck };
+
+function classifyChatPhone(raw: string): ChatPhoneStatus {
+  const trimmed = raw.trim();
+  if (!trimmed) return { kind: "empty" };
+  if (TEST_CHAT_SYNTHETIC_RE.test(trimmed)) return { kind: "synthetic" };
+  return { kind: "phone", check: checkPhone(trimmed) };
 }
 
 export default function DebugPage() {
@@ -203,12 +233,28 @@ export default function DebugPage() {
     }
   };
 
+  const chatPhoneStatus = classifyChatPhone(chatPhone);
+  // Refuse anything that resolves to neither a synthetic test id nor a valid
+  // Indian mobile — an unresolvable phone-shaped string is the exact input
+  // that would otherwise reach the backend's shape-only check and get waved
+  // through into a duplicate account.
+  const chatBlocked = chatPhoneStatus.kind === "phone" && !chatPhoneStatus.check.ok;
+
   const handleTestChat = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (chatPhoneStatus.kind === "empty") return;
+    if (chatBlocked) {
+      toast.error(
+        chatPhoneStatus.kind === "phone" ? chatPhoneStatus.check.problem ?? "Invalid phone." : "Invalid phone."
+      );
+      return;
+    }
+    const sendPhone =
+      chatPhoneStatus.kind === "phone" ? chatPhoneStatus.check.canonical : chatPhone.trim();
     setChatting(true);
     setChatResult(null);
     try {
-      const { data } = await api.post("/chat", { phone: chatPhone, message: chatMsg });
+      const { data } = await api.post("/chat", { phone: sendPhone, message: chatMsg });
       setChatResult(JSON.stringify(data, null, 2));
     } catch (err: unknown) {
       setChatResult("Error: " + ((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? "Unknown error"));
@@ -367,18 +413,45 @@ export default function DebugPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle className="text-sm font-medium">Test Chat (Lumi)</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Test Chat (Lumi)</CardTitle>
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Sends a real message into the Lumi pipeline and writes real conversation state
+                (history, memories, funnel progress) onto whatever account the phone resolves to.
+                Use a test_/eval_ id unless you specifically mean to message a real number.
+              </p>
+            </CardHeader>
             <CardContent>
               <form onSubmit={handleTestChat} className="flex flex-col gap-3">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="chat-phone">Phone</Label>
                   <Input id="chat-phone" placeholder="test_000" value={chatPhone} onChange={(e) => setChatPhone(e.target.value)} required />
+                  {/* Same rule as the orphan-adopt form: show exactly what will be sent,
+                      never silently normalize. An unresolvable phone-shaped string is
+                      refused rather than forwarded to the backend's shape-only check. */}
+                  {chatPhoneStatus.kind === "synthetic" ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      Synthetic test id — sent as typed, bypasses phone normalization.
+                    </p>
+                  ) : chatPhoneStatus.kind === "phone" ? chatPhoneStatus.check.ok ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      Will send as{" "}
+                      <span className="font-mono text-foreground">{chatPhoneStatus.check.canonical}</span>
+                      {chatPhoneStatus.check.addedCountryCode && (
+                        <span className="text-amber-600 dark:text-amber-400"> — we added the 91 for you</span>
+                      )}
+                      . Typing it without the 91 would create a second account this conversation
+                      never merges into.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-destructive">{chatPhoneStatus.check.problem}</p>
+                  ) : null}
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="chat-msg">Message</Label>
                   <Input id="chat-msg" placeholder="hi" value={chatMsg} onChange={(e) => setChatMsg(e.target.value)} required />
                 </div>
-                <Button type="submit" disabled={chatting}>{chatting ? "Sending…" : "Send"}</Button>
+                <Button type="submit" disabled={chatting || chatBlocked}>{chatting ? "Sending…" : "Send"}</Button>
                 {chatResult && (
                   <pre className="text-xs bg-muted rounded p-2 overflow-auto max-h-48">{chatResult}</pre>
                 )}

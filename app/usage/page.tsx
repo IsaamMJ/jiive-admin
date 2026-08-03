@@ -234,6 +234,16 @@ export default function UsagePage() {
     return () => clearInterval(id);
   }, [fetchData]);
 
+  // Zero calls in range is not the same claim as "0% errors, 0ms latency" — the
+  // backend's langfuse.service.ts:377-384 returns a hardcoded all-zero object
+  // when obs.length === 0 (literals, not computed from data). Rendering those
+  // literals unconditionally would show "no traffic" as "everything ran
+  // perfectly", which is backwards: zero traffic could equally mean the AI is
+  // down. Any card built from an empty observation set gets a neutral label
+  // instead of a reassuring number — an absent signal is never a positive
+  // assurance.
+  const noTraffic = !!data?.enabled && data.totalCalls === 0;
+
   const stale = data?.enabled && isStale(data.lastCallAt) && data.totalCalls > 0;
   const heartbeatStatus =
     !data?.enabled
@@ -305,12 +315,12 @@ export default function UsagePage() {
             />
             <MetricCard
               title="Fallback rate"
-              value={formatPercent(data.fallbackRate)}
-              delta={deltaLabel(
-                data.fallbackRate,
-                data.previous?.fallbackRate,
-                formatPercent
-              )}
+              value={noTraffic ? "No traffic in range" : formatPercent(data.fallbackRate)}
+              delta={
+                noTraffic
+                  ? undefined
+                  : deltaLabel(data.fallbackRate, data.previous?.fallbackRate, formatPercent)
+              }
             />
             <MetricCard
               title="Last AI response"
@@ -348,13 +358,20 @@ export default function UsagePage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-1">
-                <p className="text-2xl font-bold">
-                  {data.p50LatencyMs} <span className="text-base text-muted-foreground">ms</span>
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  p95 {formatNumber(data.p95LatencyMs)} ms · avg{" "}
-                  {formatNumber(data.avgLatencyMs)} ms
-                </p>
+                {noTraffic ? (
+                  <p className="text-2xl font-bold text-muted-foreground">No traffic in range</p>
+                ) : (
+                  <>
+                    <p className="text-2xl font-bold">
+                      {data.p50LatencyMs}{" "}
+                      <span className="text-base text-muted-foreground">ms</span>
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      p95 {formatNumber(data.p95LatencyMs)} ms · avg{" "}
+                      {formatNumber(data.avgLatencyMs)} ms
+                    </p>
+                  </>
+                )}
               </CardContent>
             </Card>
 
@@ -365,8 +382,14 @@ export default function UsagePage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-2xl font-bold">{formatPercent(data.errorRate)}</p>
-                {deltaLabel(data.errorRate, data.previous?.errorRate, formatPercent)}
+                {noTraffic ? (
+                  <p className="text-2xl font-bold text-muted-foreground">No traffic in range</p>
+                ) : (
+                  <>
+                    <p className="text-2xl font-bold">{formatPercent(data.errorRate)}</p>
+                    {deltaLabel(data.errorRate, data.previous?.errorRate, formatPercent)}
+                  </>
+                )}
               </CardContent>
             </Card>
 

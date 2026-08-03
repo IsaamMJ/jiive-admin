@@ -1,3 +1,5 @@
+import { isPurgedUser } from "@/lib/utils";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The Feedback Calls backend contract. THE ONLY PLACE these shapes are declared.
 //
@@ -388,11 +390,51 @@ export function isIssueTag(tag: string): boolean {
 /**
  * `tel:` needs digits (and a leading +) only — spaces, dashes and brackets make
  * some dialers silently drop the call rather than fail loudly.
+ *
+ * ⚠️ Verified live (GET /calls/queue, GET /users): EVERY stored phone is a bare
+ * 12-digit "91XXXXXXXXXX" with NO leading "+". A handset reads a `+`-less string
+ * as a DOMESTIC number, not +91 — the call fails or misdials a random local
+ * number. Preserving-only-if-present (the old behaviour) never added the "+", so
+ * every "Call" button on this page emitted a dead link. This must resolve the
+ * country code, not just pass digits through.
+ *
+ * Only returns null (never a best-effort guess) when the input can't be
+ * resolved with confidence — the caller must fall back to the existing
+ * disabled "No number" state (app/calls/page.tsx) rather than risk dialling
+ * the wrong person.
  */
 export function telHref(phone: string): string | null {
   const trimmed = phone.trim();
   if (!trimmed) return null;
-  const plus = trimmed.startsWith("+") ? "+" : "";
+
+  // The right-to-erasure tombstone is "purged:<uuid>". Stripped to digits it
+  // still yields digits from the UUID, so it would otherwise produce a
+  // garbage-but-well-formed `tel:` link. Refuse before the digit heuristics
+  // below ever see it. isPurgedUser lives in lib/ precisely so this pure
+  // contract file can share the one check without pulling in a feature
+  // module's axios client.
+  if (isPurgedUser(trimmed)) return null;
+
+  // An explicit "+" is trusted as already-resolved E.164 — just drop formatting
+  // noise (spaces/dashes/brackets) from what follows it.
+  if (trimmed.startsWith("+")) {
+    const digits = trimmed.slice(1).replace(/\D/g, "");
+    return digits.length >= 8 ? `+${digits}` : null;
+  }
+
   const digits = trimmed.replace(/\D/g, "");
-  return digits ? `tel:${plus}${digits}` : null;
+
+  // The verified live shape: 91 + 10-digit Indian mobile, no "+". This IS valid
+  // E.164 once a "+" is prepended — do not also strip/re-add the "91".
+  if (digits.length === 12 && digits.startsWith("91")) return `+${digits}`;
+
+  // A bare 10-digit number with no country code at all. Indian mobiles start 6-9;
+  // treat anything else (e.g. a landline missing its STD code) as unresolvable
+  // rather than guess a country.
+  if (digits.length === 10 && /^[6-9]/.test(digits)) return `+91${digits}`;
+
+  // Anything else — including the Thyrocare vendor's phlebo phone, which is
+  // [INFERRED shape] and may be formatted however the vendor likes — can't be
+  // resolved with confidence. "No usable phone number" beats a wrong dial.
+  return null;
 }

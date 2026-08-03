@@ -6,7 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { InfoTip } from "@/components/InfoTip";
 import { StatusBadge } from "@/components/StatusBadge";
-import { cn } from "@/lib/utils";
+import { cn, isPurgedUser } from "@/lib/utils";
+import { telHref } from "@/app/calls/types";
 import type { IncidentAddress, IncidentBooking, IncidentContext } from "../types";
 
 /** Roughly three vials per package — the vendor's own arithmetic on the June 21 order. */
@@ -136,9 +137,28 @@ export function IncidentContextBlock({ context }: { context: IncidentContext }) 
                   {customer.name ?? "Unnamed"}
                 </Link>
                 {customer.whatsappPhone && (
-                  <a href={`tel:${customer.whatsappPhone}`} className="font-mono text-xs text-muted-foreground hover:underline">
-                    {customer.whatsappPhone}
-                  </a>
+                  isPurgedUser(customer.whatsappPhone) ? (
+                    // The right-to-erasure tombstone ("purged:<uuid>") is not this
+                    // person's phone number — say so instead of printing the raw
+                    // string, which would read as a garbled number, not an erasure.
+                    <span className="text-xs text-muted-foreground">
+                      Purged — erased at the customer&apos;s request
+                    </span>
+                  ) : telHref(customer.whatsappPhone) ? (
+                    // Stored numbers are bare "91XXXXXXXXXX" with no "+" (verified live) —
+                    // raw interpolation here used to emit a `tel:` link a handset reads as
+                    // a domestic number and misdials. telHref resolves it to real E.164.
+                    <a
+                      href={telHref(customer.whatsappPhone)!}
+                      className="font-mono text-xs text-muted-foreground hover:underline"
+                    >
+                      {customer.whatsappPhone}
+                    </a>
+                  ) : (
+                    // telHref couldn't resolve it (e.g. unrecognised format) — show it
+                    // as plain text rather than a dead or wrong-number `tel:` link.
+                    <span className="font-mono text-xs text-muted-foreground">{customer.whatsappPhone}</span>
+                  )
                 )}
               </>
             ) : (
@@ -152,9 +172,18 @@ export function IncidentContextBlock({ context }: { context: IncidentContext }) 
               <>
                 <span className="text-sm font-medium">{phleboName}</span>
                 {phleboPhone && (
-                  <a href={`tel:${phleboPhone}`} className="font-mono text-xs text-muted-foreground hover:underline">
-                    {phleboPhone}
-                  </a>
+                  // phleboPhone comes from the Thyrocare vendor payload — [INFERRED
+                  // shape], format not pinned down — so telHref may not resolve it.
+                  // Raw interpolation (the old code) never sanitised at all; a phlebo
+                  // number with spaces/dashes or no country code would misdial exactly
+                  // like the customer number did.
+                  telHref(phleboPhone) ? (
+                    <a href={telHref(phleboPhone)!} className="font-mono text-xs text-muted-foreground hover:underline">
+                      {phleboPhone}
+                    </a>
+                  ) : (
+                    <span className="font-mono text-xs text-muted-foreground">{phleboPhone}</span>
+                  )
                 )}
               </>
             ) : (
