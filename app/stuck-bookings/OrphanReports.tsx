@@ -246,6 +246,14 @@ function AdoptDialog({
   const multi = !!pre?.multiPatient && patients.length > 1;
   const selected = patients.find((p) => p.leadId === selectedLead) ?? null;
   const unadopted = patients.filter((p) => !p.adopted);
+  /**
+   * The lead we actually adopt with. When a roster exists it comes from the
+   * CHOSEN patient and is never typed — it is already known, and hand-typing a
+   * lead that differs from a sibling's by one digit is how the wrong person's
+   * blood gets filed. The free-text field survives only for legacy payloads that
+   * carry no roster at all.
+   */
+  const effectiveLeadId = selected?.leadId ?? leadId;
 
   /** Switch patient — wipes every identity field so nothing carries across. */
   function choosePatient(leadIdValue: string) {
@@ -272,7 +280,7 @@ function AdoptDialog({
     : null;
 
   const formComplete =
-    leadId.trim() !== "" && phone.trim() !== "" && patientName.trim() !== "" &&
+    effectiveLeadId.trim() !== "" && phone.trim() !== "" && patientName.trim() !== "" &&
     dob.trim() !== "" && gender !== "" &&
     (subject !== "family_member" || relationship.trim() !== "");
 
@@ -284,7 +292,7 @@ function AdoptDialog({
 
   function body(dryRun: boolean): OrphanAdoptRequest {
     return {
-      leadId: leadId.trim(),
+      leadId: effectiveLeadId.trim(),
       phone: phone.trim(),
       patientName: patientName.trim(),
       dob: dob.trim(),
@@ -510,9 +518,20 @@ function AdoptDialog({
                 {/* ── Identity form + vendor hint side by side ───────────── */}
                 <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
                   <div className="flex flex-col gap-3">
-                    <Field label="Lead ID" required>
-                      <Input value={leadId} onChange={(e) => touched(setLeadId)(e.target.value)} className="font-mono text-sm" />
-                    </Field>
+                    {selected ? (
+                      <Field
+                        label="Lead ID"
+                        hint={`Thyrocare's ID for ${selected.name ?? "this patient"} — filled in for you, nothing to type.`}
+                      >
+                        <div className="rounded-md border border-border bg-muted/50 px-3 py-2 font-mono text-sm">
+                          {selected.leadId}
+                        </div>
+                      </Field>
+                    ) : (
+                      <Field label="Lead ID" required>
+                        <Input value={leadId} onChange={(e) => touched(setLeadId)(e.target.value)} className="font-mono text-sm" />
+                      </Field>
+                    )}
                     <Field label="WhatsApp number" required hint="Any format — this is who receives the result.">
                       <Input value={phone} onChange={(e) => touched(setPhone)(e.target.value)} placeholder="+91 99999 12345" />
                     </Field>
