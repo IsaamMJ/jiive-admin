@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 import {
   type OrphanReport, type OrphanReportList, type OrphanPreflight,
   type OrphanAdoptRequest, type OrphanAdoptResponse, type OrphanSubject,
-  ORPHAN_DOB_RULE, isDeferredNotFailed, collectionDateFromHint,
+  ORPHAN_DOB_RULE, isDeferredNotFailed, collectionDateFromHint, checkPhone,
 } from "./types";
 
 /**
@@ -254,6 +254,11 @@ function AdoptDialog({
    * carry no roster at all.
    */
   const effectiveLeadId = selected?.leadId ?? leadId;
+  /**
+   * Resolve the phone to what WhatsApp will actually match on. A bare 10-digit
+   * number would otherwise become a second account she never sees.
+   */
+  const phoneCheck = checkPhone(phone);
 
   /** Switch patient — wipes every identity field so nothing carries across. */
   function choosePatient(leadIdValue: string) {
@@ -280,7 +285,7 @@ function AdoptDialog({
     : null;
 
   const formComplete =
-    effectiveLeadId.trim() !== "" && phone.trim() !== "" && patientName.trim() !== "" &&
+    effectiveLeadId.trim() !== "" && phoneCheck.ok && patientName.trim() !== "" &&
     dob.trim() !== "" && gender !== "" &&
     (subject !== "family_member" || relationship.trim() !== "");
 
@@ -293,7 +298,7 @@ function AdoptDialog({
   function body(dryRun: boolean): OrphanAdoptRequest {
     return {
       leadId: effectiveLeadId.trim(),
-      phone: phone.trim(),
+      phone: phoneCheck.canonical,
       patientName: patientName.trim(),
       dob: dob.trim(),
       gender: gender as "male" | "female",
@@ -532,8 +537,26 @@ function AdoptDialog({
                         <Input value={leadId} onChange={(e) => touched(setLeadId)(e.target.value)} className="font-mono text-sm" />
                       </Field>
                     )}
-                    <Field label="WhatsApp number" required hint="Any format — this is who receives the result.">
+                    <Field label="WhatsApp number" required>
                       <Input value={phone} onChange={(e) => touched(setPhone)(e.target.value)} placeholder="+91 99999 12345" />
+                      {/* WhatsApp matches on the country-code form. Show exactly
+                          what will be stored — a bare 10-digit number would make
+                          a second account she never sees. */}
+                      {phone.trim() === "" ? (
+                        <p className="text-[11px] text-muted-foreground">
+                          This is who receives the result. Include the 91.
+                        </p>
+                      ) : phoneCheck.ok ? (
+                        <p className="text-[11px] text-muted-foreground">
+                          Saved as <span className="font-mono text-foreground">{phoneCheck.canonical}</span>
+                          {phoneCheck.addedCountryCode && (
+                            <span className="text-amber-600 dark:text-amber-400"> — we added the 91 for you</span>
+                          )}
+                          . WhatsApp must match this exactly, or she gets a second account.
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-destructive">{phoneCheck.problem}</p>
+                      )}
                     </Field>
                     <Field label="Patient name" required>
                       <Input value={patientName} onChange={(e) => touched(setPatientName)(e.target.value)} />

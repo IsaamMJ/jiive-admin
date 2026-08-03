@@ -272,3 +272,46 @@ export const ORPHAN_DOB_RULE =
 export function isDeferredNotFailed(r: OrphanAdoptResponse): boolean {
   return !r.success && !!r.bookingId;
 }
+
+/**
+ * What the backend will actually store for a typed phone.
+ *
+ * The server's normalizePhone() strips non-digits and NOTHING else — it does not
+ * add a missing country code. WhatsApp always delivers `919843192228`, so a
+ * number typed as bare `9843192228` becomes a SECOND account: her results land
+ * on one, her WhatsApp conversation on the other, and duplicates are never
+ * merged. She would never see her result.
+ *
+ * So we resolve to the canonical form here, show the operator exactly what will
+ * be saved, and refuse anything that can't be resolved.
+ */
+export interface PhoneCheck {
+  /** Digits only, as the backend would store it. */
+  canonical: string;
+  /** True when we supplied a missing 91 — must be surfaced, never silent. */
+  addedCountryCode: boolean;
+  ok: boolean;
+  problem: string | null;
+}
+
+export function checkPhone(raw: string): PhoneCheck {
+  const digits = (raw ?? "").replace(/\D/g, "");
+  if (digits === "") {
+    return { canonical: "", addedCountryCode: false, ok: false, problem: null };
+  }
+  // A bare Indian mobile is 10 digits starting 6-9. Unambiguous, so we can add
+  // the country code — but we say so on screen rather than doing it silently.
+  if (digits.length === 10 && /^[6-9]/.test(digits)) {
+    return { canonical: `91${digits}`, addedCountryCode: true, ok: true, problem: null };
+  }
+  if (digits.length === 12 && digits.startsWith("91")) {
+    return { canonical: digits, addedCountryCode: false, ok: true, problem: null };
+  }
+  return {
+    canonical: digits,
+    addedCountryCode: false,
+    ok: false,
+    problem:
+      "That doesn't look like an Indian mobile. Expected 10 digits, or 12 starting with 91 — anything else creates an account WhatsApp will never match.",
+  };
+}
