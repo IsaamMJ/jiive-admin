@@ -28,22 +28,33 @@ interface User {
 const PAGE_SIZE = 50;
 
 /**
- * The page size requested from GET /users. Verified live: the response has
- * ONLY a `users` key — no total, no pagination metadata — so there is no way
- * to know if more users exist beyond this limit. Getting back exactly this many
- * is the only signal we have; see `truncated` below. Today there are 14 users,
- * so this is latent, but at 201 the header would otherwise show "200 users"
- * forever and search would silently miss anyone past it. Do not "fix" this by
- * raising the limit or paging client-side through the API — a real fix needs
- * backend pagination (separate handoff); this only makes the limitation visible.
+ * The page size requested from GET /users. Verified live 2026-07-31:
+ *   PROD  /users?limit=200 → { users, total, take, hasMore }  total=14    hasMore=false  returned=14
+ *   DEV   /users?limit=200 → { users, total, take, hasMore }  total=2194  hasMore=true   returned=200
+ * The payload now carries real pagination metadata — use the server's `hasMore`
+ * and `total` (below), not the old inference ("exactly FETCH_LIMIT rows came
+ * back"), which is flat-out wrong whenever `total` happens to equal the cap.
+ * Dev is 2,194 users against this 200 cap right now — not latent, actively
+ * truncating today. Dev and prod are not in lockstep on this field yet (other
+ * fields in this same release lag on dev), so `hasMore`/`total` are treated as
+ * optional and the old length-based inference is the fallback when they're
+ * absent — never assume "no more" just because the field is missing.
+ * Do not "fix" the 200-cap by raising the limit or paging client-side through
+ * the API — a real fix needs pagination UI (separate handoff); this only makes
+ * today's limitation visible and honest about how many exist.
  */
 const FETCH_LIMIT = 200;
 
 export default function UsersPage() {
   const router = useRouter();
   const [users, setUsers] = useState<User[]>([]);
-  // True when GET /users came back with exactly FETCH_LIMIT rows — see FETCH_LIMIT.
-  const [truncated, setTruncated] = useState(false);
+  // True when the server says more users exist beyond what we fetched. Prefers
+  // the real `hasMore` signal; falls back to the old length-inference when the
+  // backend we're pointed at doesn't send it yet — see FETCH_LIMIT.
+  const [hasMore, setHasMore] = useState(false);
+  // The server's total user count, when it reports one (null on a backend that
+  // hasn't shipped it yet — see FETCH_LIMIT). Never presented as a total when null.
+  const [total, setTotal] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -51,9 +62,11 @@ export default function UsersPage() {
   useEffect(() => {
     setLoading(true);
     api.get(`/users?limit=${FETCH_LIMIT}`).then((r) => {
-      const fetched: User[] = r.data.users;
+      const data = r.data as { users: User[]; total?: number; hasMore?: boolean };
+      const fetched: User[] = data.users;
       setUsers(fetched);
-      setTruncated(fetched.length === FETCH_LIMIT);
+      setHasMore(data.hasMore ?? fetched.length === FETCH_LIMIT);
+      setTotal(data.total ?? null);
       setLoading(false);
     });
   }, []);
@@ -80,14 +93,15 @@ export default function UsersPage() {
             className="max-w-sm"
           />
           <span className="text-sm text-muted-foreground">
-            {truncated ? (
-              // An absent signal (no `total` on the wire) is never a positive
-              // assurance — never render this as a definite count. See FETCH_LIMIT.
+            {hasMore ? (
+              // An absent `total` is never a positive assurance — only say the
+              // real count when the server actually sent one. See FETCH_LIMIT.
               search.trim() !== "" ? (
-                <>{filtered.length} match{filtered.length === 1 ? "" : "es"} in first {FETCH_LIMIT} loaded —
-                search may miss customers outside this batch</>
+                <>{filtered.length} match{filtered.length === 1 ? "" : "es"} in first {FETCH_LIMIT}
+                {total !== null ? ` of ${total}` : ""} loaded — search may miss customers outside this batch</>
               ) : (
-                <>First {FETCH_LIMIT} users loaded — more may exist (server doesn&apos;t report a total)</>
+                <>First {FETCH_LIMIT}{total !== null ? ` of ${total}` : ""} users loaded — more exist
+                {total === null ? " (server didn't report a total)" : ""}</>
               )
             ) : (
               <>{filtered.length} users</>

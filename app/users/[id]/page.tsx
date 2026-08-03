@@ -20,7 +20,10 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Sparkles, ExternalLink, Reply, RefreshCw, FileText, Image as ImageIcon, Download, Loader2 } from "lucide-react";
+import {
+  Sparkles, ExternalLink, Reply, RefreshCw, FileText, Image as ImageIcon, Download, Loader2,
+  AlertTriangle, Stethoscope, UserRound, UsersRound, Eye, EyeOff,
+} from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { InfoTip } from "@/components/InfoTip";
@@ -277,6 +280,546 @@ function groupResultsByPatient(results: ResultRow[]) {
   return [...groups.values()];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Memories — Lumi's memory read-back
+//
+// WHY this tab does NOT use the `memories` array on `GET /users/:id`:
+//
+//   LumiMemory is SUBJECT-SCOPED by design. The schema says so verbatim
+//   (jiive-backend/prisma/schema.prisma:539-541): the subject is "whose fact
+//   this is, never inferred from `userId` alone (an account books for a whole
+//   family)". Every row carries subjectType / subjectId / subjectKey and the
+//   writers populate them for real.
+//
+//   `GET /users/:id` selects only `memoryType, content, relevanceScore,
+//   createdAt` (jiive-backend admin.controller.ts:1683-1692) — the subject is
+//   dropped entirely. So a fact extracted about the MOTHER ("diabetic, on
+//   metformin") rendered here as the ACCOUNT HOLDER's condition. That query
+//   also has no `state` filter, so rows Lumi itself cannot see (staged) and
+//   rows that have already been replaced (superseded) rendered identically to
+//   current, confirmed facts.
+//
+//   Its `relevanceScore` column was worse than useless: lumi-memory.service.ts
+//   :19-22 records that it "is only ever set/reset to 1.0 ... relevanceScore
+//   never varies". The old "Relevance 100%" cell was a column DEFAULT printed
+//   as if it were a measurement.
+//
+// The backend declined to widen /users/:id and pointed at the read-back
+// surface, which returns the subject, the lifecycle state and the confidence
+// signals: `GET /lumi/memory/:phone` (memory-readback.service.ts:84-192).
+// Phone-keyed, not id-keyed — the service normalises a bare 10-digit number to
+// the 91-prefixed form itself.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lifecycle state (schema.prisma LumiMemoryState). Only `active` reaches a real
+ * conversation — retrieval and the active-fact unique index see `state =
+ * 'active'` ONLY, so a staged row is structurally invisible to Lumi.
+ */
+type MemoryState =
+  | "staged_pending_consent"
+  | "staged_pending_confirm"
+  | "active"
+  | "superseded"
+  | "archived";
+
+interface MemoryFact {
+  id: string;
+  /** Namespaced taxonomy key, e.g. "allergy.penicillin". Open vocabulary. */
+  factKey: string | null;
+  category: string | null;
+  content: string;
+  /** "self" = the account holder. ANY other value is a different human being. */
+  subjectType: string;
+  /** FamilyMember FK. Null on a non-self row means the subject is unidentifiable. */
+  subjectId: string | null;
+  /** Backend's own dedup key — 'self' | 'family:<id>'. Never null. */
+  subjectKey: string;
+  /** 'self' | the family member's name | 'family (unresolved)'. See SubjectHeader. */
+  subjectLabel: string;
+  /** Typed loosely: the DB column is TEXT with a growing vocabulary, not an enum. */
+  state: MemoryState | string;
+  clinical: boolean;
+  /** Only ever true via user_confirmed / results_corroborated — never LLM self-report. */
+  verified: boolean;
+  /** Hedged mention — "I *think* I'm allergic". Not a finding. */
+  unconfirmed: boolean;
+  /** Confidence in the fact's CONTENT. null = never scored — not 0, not high. */
+  confidence: number | null;
+  /** Confidence in WHOSE fact it is. null = never scored. */
+  attributionConfidence: number | null;
+  sourceType: string | null;
+  sourceMessageId: string | null;
+  createdAt: string;
+  supersededAt: string | null;
+  archivedAt: string | null;
+}
+
+interface MemoryReadback {
+  /** null when the read-back service finds no account for that phone number. */
+  user: { id: string; name: string | null; whatsappPhone: string } | null;
+  counts: {
+    /** Over the FULL fact set, never capped by `limit` — so dormancy is visible. */
+    total: number;
+    /** Partial: a state the backend adds later must not crash this page. */
+    byState: Partial<Record<MemoryState, number>>;
+    clinical: number;
+    clinicalActive: number;
+  };
+  /** Rolling account summary. `text: null` means none was ever generated. */
+  summary: { text: string | null; updatedAt: string | null };
+  /** Most-recent-first, bounded to `limit`. */
+  facts: MemoryFact[];
+  limit: number;
+}
+
+/** The endpoint clamps to 200. Ask for the ceiling so truncation is rare. */
+const MEMORY_LIMIT = 200;
+
+/**
+ * The sentinel the backend emits when a non-self fact's FamilyMember row is
+ * gone (memory-readback.service.ts:150-151). It is NOT a person's name — it is
+ * "we know this is about someone else and we can no longer say who".
+ */
+const UNRESOLVED_SUBJECT_LABEL = "family (unresolved)";
+
+const MEMORY_STATE_META: Record<string, { label: string; tip: string; chip: string }> = {
+  active: {
+    label: "Active",
+    tip: "Lumi can see and use this right now. Active is the only state that reaches a real conversation.",
+    chip: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  },
+  staged_pending_consent: {
+    label: "Staged · needs consent",
+    tip: "Written down but parked. Lumi's own memory lookup cannot see staged rows, so this is NOT something Lumi knows. It is waiting for the customer to agree we may keep it.",
+    chip: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+  },
+  staged_pending_confirm: {
+    label: "Staged · needs confirming",
+    tip: "Written down but parked. Lumi's own memory lookup cannot see staged rows. We asked the customer to confirm it and haven't had an answer yet.",
+    chip: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+  },
+  superseded: {
+    label: "Superseded",
+    tip: "Replaced by a newer fact. It was true once — treat it as history, not as what we know today.",
+    chip: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+  },
+  archived: {
+    label: "Archived",
+    tip: "Retired from use and kept only for the record. Lumi does not read archived rows.",
+    chip: "border-slate-500/40 bg-slate-500/10 text-slate-400",
+  },
+};
+
+const isActiveFact = (f: MemoryFact) => f.state === "active";
+
+const CLINICAL_TIP =
+  "A health fact — an allergy, a medication, a condition. These carry real consequences if they are wrong or attached to the wrong person, so they are marked separately from things like 'prefers morning slots'.";
+const UNCONFIRMED_TIP =
+  "The customer hedged — \"I think I'm allergic to penicillin\". It is a mention, not a finding. Never act on it as if it were confirmed.";
+const VERIFIED_TIP =
+  "Confirmed either by the customer saying so outright, or by a lab result backing it up. Lumi cannot mark this itself. No badge simply means it hasn't been confirmed — that is the normal state for most facts, not a warning.";
+const CONFIDENCE_TIP =
+  "How sure the extractor was that it read the FACT correctly. \"Not scored\" means nobody ever put a number on it — it is not zero and not high, it was simply never measured.";
+const ATTRIBUTION_TIP =
+  "How sure the extractor was about WHO this fact is about — a separate question from whether the fact itself is right. \"Not scored\" means it was never measured, so the person named above is not guaranteed.";
+
+interface SubjectGroup {
+  key: string;
+  label: string;
+  subjectKey: string;
+  isSelf: boolean;
+  /** The dangerous case: a fact about someone we can no longer name. */
+  unresolved: boolean;
+  facts: MemoryFact[];
+}
+
+/**
+ * Group facts by the PERSON they are about — the same shape the Results tab
+ * uses, for the same reason: one account is a household, so a fact belongs to
+ * a human being, not to the login.
+ *
+ * `unresolved` is derived structurally, not by trusting the label alone:
+ * subjectType tells us it is not the account holder, and a null subjectId on
+ * such a row is exactly the failure the sentinel label describes.
+ *
+ * The group key keeps two DIFFERENT unresolved subjects apart (they carry
+ * different subjectKeys) rather than merging them into a single bucket that
+ * would read as one mystery relative.
+ */
+function groupFactsBySubject(facts: MemoryFact[]): SubjectGroup[] {
+  const groups = new Map<string, SubjectGroup>();
+  for (const f of facts) {
+    const isSelf = f.subjectType === "self";
+    const unresolved =
+      !isSelf && (f.subjectId === null || f.subjectLabel === UNRESOLVED_SUBJECT_LABEL);
+    const key = isSelf ? "__self__" : `${f.subjectId ?? "?"}|${f.subjectKey}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, label: f.subjectLabel, subjectKey: f.subjectKey, isSelf, unresolved, facts: [] };
+      groups.set(key, g);
+    }
+    g.facts.push(f);
+  }
+  // Account holder first, then named family, then the unresolved ones — which
+  // carry their own alarm banner, so they read loudly wherever they land.
+  return [...groups.values()].sort((a, b) => {
+    if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
+    if (a.unresolved !== b.unresolved) return a.unresolved ? 1 : -1;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+/**
+ * A 0..1 score, or the honest absence of one.
+ *
+ * `null` means NOBODY EVER SCORED THIS. Printing it as 0%, as an empty bar, or
+ * in any confident colour would invent a measurement — the exact bug class this
+ * screen was rebuilt to remove. So null prints the words "not scored".
+ *
+ * Only LOW scores get colour. A high score stays neutral on purpose: a number
+ * is a number, and we are not in the business of turning it into reassurance.
+ */
+function ScoreChip({ label, value, tip }: { label: string; value: number | null; tip: string }) {
+  const scored = typeof value === "number" && Number.isFinite(value);
+  const pct = scored ? Math.round((value as number) * 100) : null;
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] leading-none">
+      <span className="text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "font-medium tabular-nums",
+          !scored ? "text-muted-foreground/70 italic" : pct !== null && pct < 50 ? "text-amber-400" : "text-foreground"
+        )}
+      >
+        {scored ? `${pct}%` : "not scored"}
+      </span>
+      <InfoTip label={tip} />
+    </span>
+  );
+}
+
+/**
+ * One fact. Non-active rows are deliberately dimmed and badged — a staged row
+ * is invisible to Lumi and a superseded row has been replaced, so neither may
+ * read like current knowledge sitting in the same list as one.
+ */
+function FactCard({ fact }: { fact: MemoryFact }) {
+  const active = isActiveFact(fact);
+  const meta = MEMORY_STATE_META[fact.state];
+  const retiredAt = fact.supersededAt ?? fact.archivedAt;
+
+  return (
+    <div className={cn("border-t border-border px-3 py-3 first:border-t-0", !active && "bg-muted/30")}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {fact.clinical && (
+          <Badge variant="outline" className="gap-1 border-rose-500/40 bg-rose-500/10 px-1.5 text-[10px] text-rose-300">
+            <Stethoscope size={11} />
+            Clinical
+            <InfoTip label={CLINICAL_TIP} />
+          </Badge>
+        )}
+        {/* Active carries no badge — it is the default view, and a chip on every
+            row would drown the ones that actually need reading. */}
+        {!active && (
+          <Badge variant="outline" className={cn("gap-1 px-1.5 text-[10px]", meta?.chip)}>
+            {meta?.label ?? fact.state}
+            {meta && <InfoTip label={meta.tip} />}
+          </Badge>
+        )}
+        {fact.unconfirmed && (
+          <Badge variant="outline" className="gap-1 border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] text-amber-300">
+            Unconfirmed
+            <InfoTip label={UNCONFIRMED_TIP} />
+          </Badge>
+        )}
+        {/* Rendered only when TRUE. `verified: false` is the ordinary state of
+            most facts, so a "not verified" chip would cry wolf on every row. */}
+        {fact.verified && (
+          <Badge variant="outline" className="gap-1 border-sky-500/40 bg-sky-500/10 px-1.5 text-[10px] text-sky-300">
+            Verified
+            <InfoTip label={VERIFIED_TIP} />
+          </Badge>
+        )}
+        {fact.category && (
+          <Badge variant="outline" className="px-1.5 text-[10px] capitalize">
+            {fact.category.replace(/_/g, " ")}
+          </Badge>
+        )}
+      </div>
+
+      <p className={cn("mt-2 text-sm break-words whitespace-pre-wrap", !active && "text-muted-foreground")}>
+        {fact.content}
+      </p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <ScoreChip label="Fact confidence" value={fact.confidence} tip={CONFIDENCE_TIP} />
+        <ScoreChip label="Who it's about" value={fact.attributionConfidence} tip={ATTRIBUTION_TIP} />
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+        {fact.factKey && <span className="font-mono">{fact.factKey}</span>}
+        {fact.sourceType && <span>· {fact.sourceType.replace(/_/g, " ")}</span>}
+        <span>· {new Date(fact.createdAt).toLocaleDateString()}</span>
+        {retiredAt && (
+          <span>
+            · {fact.supersededAt ? "superseded" : "archived"} {new Date(retiredAt).toLocaleDateString()}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Who a block of facts belongs to.
+ *
+ * Three cases, and the third is the reason this whole tab was rebuilt:
+ *   self       — the account holder. Tinted with the primary colour so their own
+ *                facts never blend into a relative's.
+ *   named      — a real family member, named.
+ *   unresolved — a fact known to be about SOMEONE ELSE whose family-member
+ *                record is gone. It must never be read as the account holder's,
+ *                so it gets an alarm banner rather than a quiet grey heading.
+ */
+function SubjectHeader({ group, accountHolder }: { group: SubjectGroup; accountHolder: string }) {
+  if (group.unresolved) {
+    return (
+      <div className="flex items-start gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-400" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold break-words text-amber-200">
+            Someone else on this account — NOT {accountHolder}
+          </p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-amber-200/80">
+            These were recorded about another person on this account, but that family
+            member&apos;s record no longer exists, so we cannot say who. Do not read them
+            as {accountHolder}&apos;s.
+          </p>
+          <p className="mt-1 font-mono text-[10px] break-all text-amber-200/60">{group.subjectKey}</p>
+        </div>
+        <Badge variant="outline" className="shrink-0 border-amber-500/40 text-[10px] text-amber-200">
+          {group.facts.length}
+        </Badge>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-2",
+        group.isSelf ? "bg-primary/10" : "bg-muted/40"
+      )}
+    >
+      {group.isSelf ? (
+        <UserRound size={14} className="shrink-0 text-primary" />
+      ) : (
+        <UsersRound size={14} className="shrink-0 text-muted-foreground" />
+      )}
+      <span className="text-sm font-medium break-words">{group.isSelf ? accountHolder : group.label}</span>
+      <span className="text-xs text-muted-foreground">
+        · {group.isSelf ? "account holder" : "family member"}
+      </span>
+      <Badge variant="outline" className="ml-auto shrink-0 text-[10px]">
+        {group.facts.length}
+      </Badge>
+    </div>
+  );
+}
+
+/** One number from `counts`, with the plain-language reason it matters. */
+function CountChip({ label, value, tip, tone }: { label: string; value: number; tip: string; tone?: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1">
+      <span className={cn("text-sm font-semibold tabular-nums", tone)}>{value}</span>
+      <span className="truncate text-[11px] text-muted-foreground">{label}</span>
+      <InfoTip label={tip} />
+    </div>
+  );
+}
+
+/**
+ * Turn an axios failure into something an operator can act on. The server's own
+ * message wins wherever it exists — a paraphrase has cost us debugging hours
+ * before. 403 is called out separately because this endpoint is gated harder
+ * than the rest of the page (RolesGuard + `admin` role), so a token that loads
+ * every other tab can still be refused here.
+ */
+function memoryErrorMessage(e: unknown): string {
+  const err = e as {
+    response?: { status?: number; data?: { message?: string | string[]; error?: string } };
+    message?: string;
+  };
+  const status = err?.response?.status;
+  const body = err?.response?.data;
+  const server = Array.isArray(body?.message) ? body.message.join(", ") : body?.message ?? body?.error;
+  if (status === 404) {
+    return "This backend doesn't have the memory read-back endpoint yet (404 on /lumi/memory). Nothing is wrong with the account.";
+  }
+  if (status === 403) {
+    return server || "Your admin account isn't allowed to read memory (403). This endpoint needs the 'admin' role.";
+  }
+  if (server) return `${status ?? "Request failed"}: ${server}`;
+  return err?.message || "Couldn't load memories.";
+}
+
+/**
+ * The Memories tab body, once a read-back has actually arrived.
+ *
+ * Default view shows ACTIVE facts only. Staged / superseded / archived rows sit
+ * behind a toggle because they are not current knowledge — a staged row is
+ * structurally invisible to Lumi's own retrieval and a superseded row has been
+ * replaced — and mixing them into the same list is how "I *think* I'm allergic"
+ * came to look identical to a confirmed allergy.
+ */
+function MemoriesPanel({
+  readback, accountHolder, showInactive, onToggleInactive, refreshing, onRefresh, staleError,
+}: {
+  readback: MemoryReadback;
+  accountHolder: string;
+  showInactive: boolean;
+  onToggleInactive: () => void;
+  refreshing: boolean;
+  onRefresh: () => void;
+  /** A refresh that failed while data was already on screen. Warn, don't blank. */
+  staleError: string | null;
+}) {
+  const { counts, facts, summary } = readback;
+  const byState = counts.byState;
+  const stagedCount = (byState.staged_pending_consent ?? 0) + (byState.staged_pending_confirm ?? 0);
+
+  const inactiveLoaded = facts.filter((f) => !isActiveFact(f)).length;
+  const visible = showInactive ? facts : facts.filter(isActiveFact);
+  const groups = groupFactsBySubject(visible);
+  // `counts` reads the whole set; `facts` is a page. Say so rather than letting
+  // a capped list read as the complete picture.
+  const hidden = counts.total - facts.length;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Card>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-1.5 text-sm font-medium">
+            What Lumi remembers
+            <InfoTip label="Facts Lumi has written down from conversations and results. One account can cover a whole family, so every fact below is filed under the person it is actually about." />
+          </CardTitle>
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={onRefresh} disabled={refreshing}>
+            <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {staleError && (
+            <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
+              Showing the last good read — the refresh failed: {staleError}
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-1.5">
+            <CountChip
+              label="recorded"
+              value={counts.total}
+              tip="Every row ever written for this account, in any state — including ones Lumi cannot use."
+            />
+            <CountChip
+              label="active"
+              value={byState.active ?? 0}
+              tone="text-emerald-400"
+              tip="Facts Lumi can actually see and use in a conversation. This is the number that describes what Lumi knows."
+            />
+            <CountChip
+              label="staged"
+              value={stagedCount}
+              tip="Written down but parked, waiting on the customer's consent or confirmation. Lumi's memory lookup cannot see staged rows, so they are NOT things Lumi knows."
+            />
+            <CountChip
+              label="superseded"
+              value={byState.superseded ?? 0}
+              tip="Replaced by a newer fact. History, not current knowledge."
+            />
+            <CountChip
+              label="archived"
+              value={byState.archived ?? 0}
+              tip="Retired from use, kept only for the record. Lumi does not read these."
+            />
+            <CountChip
+              label={`clinical active (of ${counts.clinical})`}
+              value={counts.clinicalActive}
+              tone={counts.clinicalActive > 0 ? "text-rose-300" : undefined}
+              tip="Health facts — allergies, medications, conditions — that Lumi can currently use. The number in brackets counts every clinical row in any state."
+            />
+          </div>
+
+          <div className="rounded-md border border-border bg-muted/20 p-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-medium">Account summary</span>
+              <InfoTip label="A short rolling description of the account that Lumi keeps alongside the individual facts. It is generated automatically, not written by a person." />
+              {summary.updatedAt && (
+                <span className="ml-auto text-[10px] text-muted-foreground">
+                  updated {new Date(summary.updatedAt).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+            {summary.text ? (
+              <p className="mt-1.5 text-sm break-words whitespace-pre-wrap">{summary.text}</p>
+            ) : (
+              <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground italic">
+                No summary has ever been generated for this account. That is the absence of a
+                summary — not a statement that there is nothing to report.
+              </p>
+            )}
+          </div>
+
+          {hidden > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              Showing the {facts.length} most recent of {counts.total} recorded rows.
+              {" "}{hidden} older {hidden === 1 ? "row is" : "rows are"} not on this page.
+            </p>
+          )}
+
+          {inactiveLoaded > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={onToggleInactive}>
+                {showInactive ? <EyeOff size={12} /> : <Eye size={12} />}
+                {showInactive ? "Hide" : "Show"} staged, superseded &amp; archived ({inactiveLoaded})
+              </Button>
+              <InfoTip label="These rows exist in the database but Lumi does not use them: staged rows are waiting on the customer, superseded rows have been replaced, archived rows are retired. Hidden by default so they can't be mistaken for current facts." />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {counts.total === 0 ? (
+        <div className="rounded-lg border border-border px-3 py-8 text-center">
+          <p className="text-sm text-muted-foreground">Lumi hasn&apos;t recorded anything for this account yet.</p>
+          <p className="mt-1 text-xs text-muted-foreground/70">
+            Nothing has been written down. That is not the same as knowing there is nothing to know.
+          </p>
+        </div>
+      ) : visible.length === 0 ? (
+        <div className="rounded-lg border border-border px-3 py-8 text-center">
+          <p className="text-sm text-muted-foreground">No active facts.</p>
+          <p className="mt-1 text-xs text-muted-foreground/70">
+            {inactiveLoaded > 0
+              ? `${inactiveLoaded} recorded ${inactiveLoaded === 1 ? "row is" : "rows are"} staged, superseded or archived — Lumi uses none of them. Use the toggle above to read them.`
+              : "Nothing on this page is active."}
+          </p>
+        </div>
+      ) : (
+        groups.map((group) => (
+          <div key={group.key} className="overflow-hidden rounded-lg border border-border">
+            <SubjectHeader group={group} accountHolder={accountHolder} />
+            {group.facts.map((f) => (
+              <FactCard key={f.id} fact={f} />
+            ))}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 /**
  * Render WhatsApp inline formatting the way WhatsApp itself does, so the admin
  * conversation reads like the real chat instead of showing raw markers:
@@ -348,6 +891,22 @@ export default function UserDetailPage() {
   const [txOffset, setTxOffset] = useState(0);
   const [txLoading, setTxLoading] = useState(false);
 
+  // Memories. Held here, not inside the tab panel, because Base UI unmounts an
+  // inactive Tabs.Panel — state living in the panel would be thrown away and
+  // refetched every time the operator flicked between tabs, and every fetch
+  // writes an `[AUDIT] memory-readback by admin ...` line server-side.
+  //
+  // Both the payload and the error are stamped with the user id they belong to.
+  // The App Router reuses this component when you navigate /users/a -> /users/b,
+  // so an unstamped cache would show one customer's clinical facts under
+  // another customer's name for as long as the refetch takes.
+  const [mem, setMem] = useState<{ forUserId: string; data: MemoryReadback } | null>(null);
+  const [memError, setMemError] = useState<{ forUserId: string; message: string } | null>(null);
+  const [memRefreshing, setMemRefreshing] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
+  /** Which user id we've already fired a read-back for — stops the effect looping. */
+  const memRequestedForRef = useRef<string | null>(null);
+
   const [grantOpen, setGrantOpen] = useState(false);
   const [grantForm, setGrantForm] = useState({ credits: "", reason: "", notify: true });
   const [grantSubmitting, setGrantSubmitting] = useState(false);
@@ -413,6 +972,47 @@ export default function UserDetailPage() {
     convoCountRef.current = conversationCount;
     if (grew && wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [activeTab, conversationCount]);
+
+  /**
+   * Read memory back from the subject-aware endpoint.
+   *
+   * Note there is no synchronous setState here before the first await — the
+   * "loading" state is DERIVED (no payload and no error yet) rather than
+   * flagged, so the tab-open effect below stays free of cascading renders.
+   *
+   * A failed refresh keeps whatever is already on screen and shows the error
+   * beside it: blanking a screen of clinical facts because one poll failed is
+   * worse than showing them with a visible "this didn't refresh" warning.
+   */
+  const loadMemories = useCallback(async (forUserId: string, phone: string) => {
+    try {
+      const r = await api.get(`/lumi/memory/${encodeURIComponent(phone)}?limit=${MEMORY_LIMIT}`);
+      setMem({ forUserId, data: r.data as MemoryReadback });
+      setMemError(null);
+    } catch (e) {
+      setMemError({ forUserId, message: memoryErrorMessage(e) });
+    }
+  }, []);
+
+  const memPhone = data?.user.whatsappPhone;
+
+  // Fetch when the operator actually opens the tab. Not on page load: this
+  // endpoint returns raw clinical content and writes a server-side audit line
+  // naming who read which phone, so it shouldn't fire for someone who only
+  // came to grant credits.
+  useEffect(() => {
+    if (activeTab !== "memories" || !memPhone) return;
+    if (memRequestedForRef.current === id) return;
+    memRequestedForRef.current = id;
+    void loadMemories(id, memPhone);
+  }, [activeTab, id, memPhone, loadMemories]);
+
+  const refreshMemories = async () => {
+    if (memRefreshing || !memPhone) return;
+    setMemRefreshing(true);
+    await loadMemories(id, memPhone);
+    setMemRefreshing(false);
+  };
 
   const loadTxPage = useCallback((offset: number) => {
     setTxLoading(true);
@@ -485,6 +1085,14 @@ export default function UserDetailPage() {
 
   const { user, conversations, bookings, memories, results } = data;
 
+  // Only trust the cached read-back if it belongs to the user on screen — see
+  // the note on the `mem` state above.
+  const memView = mem && mem.forUserId === id ? mem.data : null;
+  const memErr = memError && memError.forUserId === id ? memError.message : null;
+  // Derived, not flagged: nothing has arrived and nothing has failed yet.
+  const memLoading = !memView && !memErr;
+  const accountHolder = user.name ?? user.whatsappPhone;
+
   return (
     <AdminLayout title={user.name ?? user.whatsappPhone}>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col gap-4">
@@ -493,7 +1101,9 @@ export default function UserDetailPage() {
           <TabsTrigger value="conversations">Conversations ({conversations.length})</TabsTrigger>
           <TabsTrigger value="bookings">Bookings ({bookings.length})</TabsTrigger>
           <TabsTrigger value="results">Results ({results.length})</TabsTrigger>
-          <TabsTrigger value="memories">Memories ({memories.length})</TabsTrigger>
+          {/* Falls back to the legacy array's length until the read-back lands —
+              same table, same unfiltered total, so the number doesn't jump. */}
+          <TabsTrigger value="memories">Memories ({memView?.counts.total ?? memories.length})</TabsTrigger>
           <TabsTrigger value="credits">Credits ({txTotal})</TabsTrigger>
         </TabsList>
 
@@ -722,32 +1332,59 @@ export default function UserDetailPage() {
           </div>
         </TabsContent>
 
-        {/* Memories */}
+        {/* Memories — see the block comment above `MemoryFact` for why this reads
+            /lumi/memory/:phone instead of the `memories` array on /users/:id. */}
         <TabsContent value="memories">
-          <div className="rounded-lg border border-border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Content</TableHead>
-                  <TableHead>Relevance</TableHead>
-                  <TableHead>Date</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {memories.length === 0 ? (
-                  <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-6">No memories</TableCell></TableRow>
-                ) : memories.map((m, i) => (
-                  <TableRow key={i}>
-                    <TableCell><Badge variant="outline" className="capitalize text-xs">{m.memoryType.replace(/_/g, " ")}</Badge></TableCell>
-                    <TableCell className="text-sm max-w-xs">{m.content}</TableCell>
-                    <TableCell>{(parseFloat(m.relevanceScore) * 100).toFixed(0)}%</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{new Date(m.createdAt).toLocaleDateString()}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          {memLoading ? (
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-40" />
+              <Skeleton className="h-32" />
+            </div>
+          ) : !memView ? (
+            <Card>
+              <CardContent className="flex flex-col items-start gap-2 py-6">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <AlertTriangle size={15} className="shrink-0 text-amber-400" />
+                  Couldn&apos;t load memories
+                </p>
+                <p className="text-xs break-words text-muted-foreground">{memErr}</p>
+                <p className="text-[11px] text-muted-foreground/70">
+                  This is a failure to read, not an empty memory. Nothing has been ruled out.
+                </p>
+                <Button variant="outline" size="sm" className="mt-1 h-7 gap-1.5 text-xs" onClick={refreshMemories} disabled={memRefreshing}>
+                  <RefreshCw size={12} className={memRefreshing ? "animate-spin" : ""} />
+                  {memRefreshing ? "Retrying…" : "Try again"}
+                </Button>
+              </CardContent>
+            </Card>
+          ) : !memView.user ? (
+            /* The read-back is phone-keyed. A null user means it matched no
+               account for this number — a different thing from "no memories",
+               and a sign the stored phone doesn't match what WhatsApp delivers. */
+            <Card>
+              <CardContent className="flex flex-col items-start gap-2 py-6">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <AlertTriangle size={15} className="shrink-0 text-amber-400" />
+                  No account matched this phone number
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Memory is looked up by phone number, and{" "}
+                  <span className="font-mono">{user.whatsappPhone}</span> matched nothing. We can&apos;t
+                  say what Lumi remembers about this customer — not that it remembers nothing.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <MemoriesPanel
+              readback={memView}
+              accountHolder={accountHolder}
+              showInactive={showInactive}
+              onToggleInactive={() => setShowInactive((v) => !v)}
+              refreshing={memRefreshing}
+              onRefresh={refreshMemories}
+              staleError={memErr}
+            />
+          )}
         </TabsContent>
 
         {/* Credits */}

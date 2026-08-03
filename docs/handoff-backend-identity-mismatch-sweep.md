@@ -4,6 +4,26 @@
 **From:** jiive-admin (frontend)
 **Scope:** backend-only items from a targeted sweep. The frontend half is already fixed and shipped.
 
+> **STATUS — resolved 2026-08-03 (backend `b686adc`).** Items 1, 3, 4, 5, 6 fixed and
+> verified by us against live prod. Item 2 needed no backend change — the readback
+> endpoint already carried everything; the frontend now points at it. Item 7 is filed
+> as `MEDIUM-failed-result-reports-confident-not-elevated` and deliberately deferred
+> until the in-flight `lumi/*` rewrite settles; our status gate stays permanently.
+>
+> Two things we found while verifying, recorded so they aren't rediscovered:
+>
+> - **`patientId` is absent when the patient IS the account holder** (`relationship: "self"`).
+>   Verified prod: Fareetha Rafi → `relationship: "self"`, no `patientId`; Hafsah
+>   Abdulhameed → `relationship: "sibling"`, `patientId: 7b757eca-…`. Absence means
+>   "the account holder", not "unknown". That is fine as a contract, but it *is* another
+>   absent-signal-with-two-meanings, so it's written down rather than inferred.
+> - **Dev lags prod on this release.** At time of writing dev returns neither `patientId`
+>   nor `relationship`, and its feedback phone search still returns 0. Dev *does* have
+>   `total`/`hasMore`. The frontend tolerates both shapes; flagging it so nobody
+>   concludes from a dev test that a fix didn't land.
+>
+> Detail below is kept as the record of what was found and why.
+
 ---
 
 ## Why these are grouped together
@@ -140,6 +160,36 @@ Our detail page was rendering that as **"Elevated: No"** next to a fabricated **
 **What we need:** make `elevatedFlag` nullable and set it only on the success path, and stop writing `chronologicalAge: 0` — a real age was never established, and `0` is not a safer placeholder than null, it's a more convincing one. If the column can't be nullable for schema reasons, tell us and we'll keep gating on status permanently.
 
 The principle we're applying on our side, for what it's worth: **an absent signal is never a positive assurance.** A value that means "we don't know" must not be storable as a value that means "we checked, and it's fine."
+
+---
+
+---
+
+## 8. Bio-age is computed for minors, and the AI now consumes it — NEW, live, outside the original sweep
+
+Found while verifying item 1. Not part of the identifier-mismatch class — raising it because it is a clinical-validity question with a live consumer, and it needs a decision rather than a patch.
+
+Live on prod, result `13b6bc3c…` (Hafsah Abdulhameed, the sibling from item 1):
+
+```
+chronologicalAge : 14
+calculatedAge    : 5.0        ← biological age
+ageDelta         : -9
+
+GET /llm-playground/patients/by-patient/7b757eca-…  → 200
+  label: "female · 10–19 · bio-age 5.0"
+  deidentified: { sex: "female", ageBand: "10–19", chronologicalAge: 14, latestBioAge: "5.0" }
+```
+
+A bio-age of 5 for a 14-year-old is not a finding, it's an out-of-domain result. PhenoAge (Levine 2018) is fitted on NHANES **adults**; it isn't defined for children, so the output isn't a wrong number so much as a meaningless one.
+
+We looked for a lower age bound in `results/phenoage.service.ts` and `thyrocare/results-pipeline.service.ts` and found none — `overflowCapped` guards the top of the exponent (`xb > 709`) but nothing guards the bottom of the age domain. Please correct us if there's a guard elsewhere we missed.
+
+**Why it matters more than it did last week:** as of item 1 this value is deep-linked into the LLM playground as patient context. An operator asking the AI about this patient gets reasoning built on a biological age of 5. It is also presumably on the customer-facing results page.
+
+**What we'd suggest:** decide the minimum age at which PhenoAge is reported at all, and below it produce no bio-age rather than an out-of-domain one — with `calculatedAge`/`ageDelta` null and a reason, which the frontend already renders as "—" correctly. A number that cannot be right is worse than a blank, especially one a parent will read.
+
+We have not changed anything on our side for this — there's nothing sensible for the frontend to do with a bio-age of 5 except display what it's given. Your call on the threshold.
 
 ---
 

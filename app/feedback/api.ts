@@ -160,7 +160,7 @@ function defaultExportName(params: ExportParams): string {
 // Lives here so ALL axios in the feedback module stays in one file.
 
 /**
- * The page size requested from GET /users. See listUsersForPicker's `truncated`.
+ * The page size requested from GET /users. See listUsersForPicker's `hasMore`.
  * Exported so LogFeedbackDialog's truncation caveat can't drift out of sync with
  * the number actually requested.
  */
@@ -173,20 +173,33 @@ export const USERS_PICKER_LIMIT = 200;
  * per user — see app/users/page.tsx — but the picker only needs id/name/phone.
  *
  * Purged users (see isPurgedUser above) are dropped: you cannot log feedback
- * against someone who has been erased.
+ * against someone who has been erased. That means `users.length` on the
+ * returned value is NOT `total` below — `total` is the server's count of every
+ * user behind this endpoint (purged included, before this function's filter),
+ * so never present it as "N customers you can pick from".
  *
- * ⚠️ Verified live: the response has ONLY a `users` key — no total, no pagination
- * metadata — so the frontend has no way to know if more customers exist beyond
- * the limit. The only available signal is "we got back exactly `limit` rows".
- * `truncated` surfaces that so the caller can say so rather than let "no
- * matches" be read as "this customer doesn't exist" when they just weren't
- * fetched. Do not fix this by raising the limit or paging client-side through
- * the API — that's a backend-pagination fix, handed off separately.
+ * Verified live 2026-07-31:
+ *   PROD  /users?limit=200 → total=14    hasMore=false
+ *   DEV   /users?limit=200 → total=2194  hasMore=true (only 200 returned)
+ * Use the server's `hasMore`/`total` rather than inferring truncation from
+ * "exactly `limit` rows came back" — that inference is wrong whenever `total`
+ * happens to equal the cap, and dev is sitting at 2,194 against this 200 cap
+ * right now. Dev and prod are not in lockstep on this field yet (other fields
+ * in this same release lag on dev), so both are optional here — fall back to
+ * the old length-based inference when absent rather than assume "no more".
+ * Do not fix this by raising the limit or paging client-side through the API —
+ * that's a backend-pagination fix, handed off separately.
  */
-export async function listUsersForPicker(): Promise<{ users: PickableUser[]; truncated: boolean }> {
-  const r = await api.get<{ users?: Array<{ id: string; name?: string; whatsappPhone?: string }> }>(
-    `/users?limit=${USERS_PICKER_LIMIT}`
-  );
+export async function listUsersForPicker(): Promise<{
+  users: PickableUser[];
+  hasMore: boolean;
+  total: number | null;
+}> {
+  const r = await api.get<{
+    users?: Array<{ id: string; name?: string; whatsappPhone?: string }>;
+    hasMore?: boolean;
+    total?: number;
+  }>(`/users?limit=${USERS_PICKER_LIMIT}`);
   const raw = r.data?.users ?? [];
   const users = raw
     .filter((u) => !isPurgedUser(u.whatsappPhone))
@@ -195,7 +208,11 @@ export async function listUsersForPicker(): Promise<{ users: PickableUser[]; tru
       name: u.name ?? "",
       whatsappPhone: u.whatsappPhone ?? "",
     }));
-  return { users, truncated: raw.length === USERS_PICKER_LIMIT };
+  return {
+    users,
+    hasMore: r.data?.hasMore ?? raw.length === USERS_PICKER_LIMIT,
+    total: r.data?.total ?? null,
+  };
 }
 
 /**

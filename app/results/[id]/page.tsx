@@ -39,6 +39,23 @@ interface ResultDetail {
   // (report-parser.service.ts:423-435). Every dereference below must handle null —
   // there is no error.tsx under app/, so an unguarded access here white-screens.
   booking: { patientName: string; appointmentDate: string; appointmentTime: string } | null;
+  // Flat, backend-computed "who is this result for" fields (backend handoff shipped —
+  // the userId-only workaround below is now removed). Prefer these over
+  // booking.patientName: booking can be null, and the backend is moving this data off it.
+  //
+  // THE TRAP: `patientId` is absence-as-signal, not absence-as-unknown. It's present when
+  // the patient is a FamilyMember, and ABSENT when the patient IS the account holder
+  // (relationship "self"). Verified live on prod:
+  //   result 13b6bc3c-b19e-495e-8fc6-129da5b1dc07: patientName "Hafsah Abdulhameed",
+  //     relationship "sibling", patientId "7b757eca-558c-4afc-9d49-19068cca1205"
+  //   another prod result: patientName "Fareetha Rafi", relationship "self", patientId ABSENT
+  //
+  // Dev is NOT in lockstep with prod: dev returns neither field on this endpoint at all.
+  // So there are three states, not two — see classifyPatientState() below, which is the
+  // single place that turns (patientId, relationship) into a meaning.
+  patientName?: string | null;
+  patientId?: string | null;
+  relationship?: string | null;
   biomarkerValues: {
     biomarkerName: string;
     testCode: string;
@@ -52,6 +69,22 @@ interface ResultDetail {
   }[];
   aiSuggestions: { text: string; category: string; urgency: string }[];
   resultTokens: { token: string; expiresAt: string; viewCount: number }[];
+}
+
+type PatientState =
+  | { kind: "family"; patientId: string } // a FamilyMember other than the account holder
+  | { kind: "self" } // patientId absent, relationship confirms it's the account holder
+  | { kind: "unknown" }; // neither field present — dev backend, or a pre-handoff prod row
+
+/**
+ * Turn (patientId, relationship) into one of three meanings. Do NOT collapse "self" and
+ * "unknown" into one "no id" case — they mean different things (see the patientId comment
+ * on ResultDetail above for the live-prod evidence of that trap).
+ */
+function classifyPatientState(result: Pick<ResultDetail, "patientId" | "relationship">): PatientState {
+  if (result.patientId) return { kind: "family", patientId: result.patientId };
+  if (result.relationship?.trim().toLowerCase() === "self") return { kind: "self" };
+  return { kind: "unknown" };
 }
 
 export default function ResultDetailPage() {
@@ -77,6 +110,21 @@ export default function ResultDetailPage() {
     </AdminLayout>
   );
 
+  // WHO this result belongs to. Computed once — the header (title + badge + AI button)
+  // and the Patient cell below both need the same classification.
+  const subjectName = result.patientName?.trim() || result.booking?.patientName?.trim() || null;
+  const accountName = result.user.name ?? result.user.whatsappPhone;
+  const patientState = classifyPatientState(result);
+  const isDifferentFromAccount = patientState.kind === "family"
+    ? true
+    : patientState.kind === "self"
+      ? false
+      // No relationship signal at all (dev backend, or a pre-handoff prod row) — fall back
+      // to a raw name comparison. That's a guess, not a fact: live prod showed
+      // "ishaaq m j" (account) vs "Ishaaq" (patient) false-positive here on sloppy name
+      // entry, which `relationship` now answers exactly for every row that has it.
+      : subjectName !== null && subjectName !== accountName;
+
   return (
     <AdminLayout title="Result Detail">
       <div className="flex flex-col gap-6">
@@ -84,34 +132,42 @@ export default function ResultDetailPage() {
           <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               {/* Title must name the PATIENT, not the account holder — a booking can be for
-                  a family member, and this is their blood result. Live proof: result
-                  13b6bc3c-b19e-495e-8fc6-129da5b1dc07 showed "Zahrah Abdulhameed" here while
-                  the Patient cell correctly showed "Hafsah Abdulhameed" (2 of 15 live results
-                  mismatch). booking can be null — fall back to an explicit label instead of
-                  crashing or silently showing the account name as if it were the patient. */}
+                  a family member, and this is their blood result. Prefer the flat
+                  `patientName` field (backend handoff — see the ResultDetail.patientName
+                  comment above); fall back to booking.patientName for older shapes. Both can
+                  be absent (booking null + pre-handoff prod/dev) — fall back to an explicit
+                  label instead of crashing or silently showing the account name as if it
+                  were the patient. */}
               <CardTitle className="capitalize">
-                {result.testType.replace(/_/g, " ")} — {result.booking ? result.booking.patientName : "Uploaded report (no booking)"}
+                {result.testType.replace(/_/g, " ")} — {subjectName ?? "Uploaded report (no booking)"}
               </CardTitle>
               <div className="flex flex-wrap items-center gap-2 mt-1">
-                <p className="text-xs text-muted-foreground">Account: {result.user.name ?? result.user.whatsappPhone}</p>
-                {result.booking && result.booking.patientName !== (result.user.name ?? result.user.whatsappPhone) && (
+                <p className="text-xs text-muted-foreground">Account: {accountName}</p>
+                {isDifferentFromAccount && (
                   <Badge variant="outline" className="text-[10px] border-amber-500/50 text-amber-400">
                     Different from patient
                   </Badge>
                 )}
-                {!result.booking && (
+                {!subjectName && (
                   <Badge variant="outline" className="text-[10px] border-amber-500/50 text-amber-400">
                     Patient identity unconfirmed
                   </Badge>
                 )}
               </div>
             </div>
-            <Link href={`/playground?userId=${result.user.id}`}>
+            <Link href={
+              patientState.kind === "family"
+                ? `/playground?patientId=${patientState.patientId}`
+                : `/playground?userId=${result.user.id}`
+            }>
               <Button size="sm" variant="outline" className="gap-1.5 shrink-0">
                 <Sparkles size={14} />
-                {/* Account-scoped, not patient-scoped: GET /results/:id doesn't return a
-                    patientId yet (see backend handoff), so don't claim patient-level scope. */}
-                Ask AI about this account
+                {/* Only claim patient scope when we have a real FamilyMember id ("family").
+                    For "self" and "unknown" there's no patient id to scope to — the account
+                    link is what's actually being followed, so say that instead of
+                    overclaiming (patientId wins over userId in the playground — see
+                    app/playground/page.tsx's deep-link effect). */}
+                {patientState.kind === "family" ? "Ask AI about this patient" : "Ask AI about this account"}
               </Button>
             </Link>
           </CardHeader>
@@ -122,7 +178,11 @@ export default function ResultDetailPage() {
               // chronologicalAge: 0 and never sets elevatedFlag, so it silently
               // defaults to false (elevatedFlag is non-nullable — schema.prisma:289).
               // Rendered raw, that reads as a real clinical all-clear it never computed.
-              // So: only show these values once the pipeline actually finished.
+              // So: only show these values once the pipeline actually finished. This gate is
+              // PERMANENT, not a stopgap — backend's fix for the underlying default
+              // (their item 7) is filed but not shipped; elevatedFlag is still non-nullable
+              // and failed rows still get chronologicalAge 0. Don't remove this gate when
+              // that lands unless the backend contract itself changes.
               const isCompleted = result.status === "completed";
               const delta = isCompleted && result.ageDelta != null ? parseFloat(result.ageDelta) : NaN;
               return (
@@ -145,11 +205,22 @@ export default function ResultDetailPage() {
                   </div>
                   <div><p className="text-muted-foreground">Date</p><p>{new Date(result.createdAt).toLocaleDateString()}</p></div>
                   <div><p className="text-muted-foreground">Patient</p>
-                    {result.booking ? (
+                    {subjectName ? (
                       <>
-                        <p className="font-medium">{result.booking.patientName}</p>
-                        {/* Links to the ACCOUNT, not a patient page — no patientId to link
-                            to yet, so say what the link actually goes to. */}
+                        <p className="font-medium">
+                          {subjectName}
+                          {/* Relationship only when it adds something: "family" is the one
+                              state where it's new information ("self" would just repeat the
+                              account name; "unknown" has no relationship to show). Mirrors
+                              PatientCell in app/users/[id]/page.tsx. */}
+                          {patientState.kind === "family" && result.relationship && (
+                            <span className="text-xs capitalize text-muted-foreground"> · {result.relationship.trim()}</span>
+                          )}
+                        </p>
+                        {/* Always links to the account — this admin has no standalone patient
+                            profile page, only the playground supports patient-scoped context
+                            (the Ask AI button above). The account page still shows every
+                            booking/result for the household, including this patient's. */}
                         <Link href={`/users/${result.user.id}`} className="text-xs text-primary hover:underline">
                           View account →
                         </Link>
