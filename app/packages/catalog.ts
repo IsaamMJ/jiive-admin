@@ -192,7 +192,7 @@ export async function loadCatalog(): Promise<CatalogState> {
   // same SKU twice in the picker.
   const seen = new Set<string>();
   const unique = all.filter((s) => {
-    const k = `${s.id} ${s.name} ${s.type}`;
+    const k = `${s.id}\u0000${s.name}\u0000${s.type}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
@@ -306,4 +306,4 @@ export function nearMatches(skus: SlimSku[], typed: string, n = 3): SlimSku[] {
 }
 
 /** A stable React key. `id` alone is not unique — see the de-dupe note above. */
-export const skuKey = (s: SlimSku, i: number) => `${s.id} ${s.type} ${i}`;
+export const skuKey = (s: SlimSku, i: number) => `${s.id}\u0000${s.type}\u0000${i}`;
