@@ -149,7 +149,51 @@ Nothing in jiive-admin calls it (grep for `inject-report` across `app/` and `lib
 
 ---
 
-## 7. `saveFailedResult` writes values that were never computed — MED
+## 7. `elevatedFlag` is a false all-clear — and the deferral reasoning doesn't hold
+
+> **UPDATED 2026-08-05 — please re-read before leaving this deferred.**
+>
+> You deferred this until the `lumi/*` rewrite settles, on the grounds that
+> *"runtime risk today is zero: every reader filters status=COMPLETED and can
+> never fetch a failed row, so the only exposure is a consumer reading a failed
+> row directly."*
+>
+> That reasoning doesn't hold, and we should have caught it when you wrote it.
+> **The false all-clear is on COMPLETED rows.** Filtering to `status = COMPLETED`
+> does not avoid it — it selects for it.
+>
+> A run completes normally on a panel that doesn't carry all 9 PhenoAge markers.
+> It stores the biomarkers it did get and leaves `calculatedAge` and `ageDelta`
+> null — both correctly nullable. But `elevatedFlag` cannot be null, so it stays
+> at its `@default(false)`, and every downstream reader sees a confident
+> "not elevated" that no calculation ever produced.
+>
+> **Live on prod, 2026-08-05 — 7 of 15 results:**
+>
+> ```
+> patientName            status      calculatedAge   ageDelta   elevatedFlag
+> Juveira Abdulhameed    completed   null            null       false
+> Alfanniah              completed   null            null       false
+> Mohamed Jahir  (x5)    completed   null            null       false
+> ```
+>
+> Every one of those was rendering **"Elevated: No"** in the admin. That was our
+> bug to fix and we have fixed it — the admin now gates on `calculatedAge != null`
+> rather than on status, and says *"Not calculated — this panel is missing some of
+> the 9 markers"*. Chrono age still shows, because it comes from the DOB and is
+> real regardless of the panel.
+>
+> But we can only fix what *we* render. Any other consumer of `elevatedFlag` —
+> the customer results page, notifications, Lumi's context, the AI suggestion
+> input — reads the same confident `false`. **Please check those.** We can't see
+> them from here.
+>
+> The fix is unchanged and still small: make `elevatedFlag` nullable and set it
+> only when a bio-age was actually computed. We would not call this MEDIUM any
+> more. A column default is currently answering a clinical question on the
+> majority of live results.
+
+### Original report — `saveFailedResult` writes values that were never computed
 
 `results-pipeline.service.ts:628-650` creates the failed row with `chronologicalAge: 0`, and never sets `elevatedFlag` — so it takes the schema default at `prisma/schema.prisma:289`, `Boolean @default(false)`.
 

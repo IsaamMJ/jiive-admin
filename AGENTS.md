@@ -33,6 +33,24 @@ Top-level directories under `app/` (Next.js App Router) and their owners:
   `GET /bookings`, so it works without the incidents backend.
 - `app/results/` — lab results list + per-result detail
 - `app/credits/` — balances, packs, action costs
+- `app/packages/` — the bookable Thyrocare packages: price, and which panel a customer
+  actually gets. Contract + traps in `types.ts`, the only axios in `api.ts` (it carries
+  runtime wire guards), rupees↔paise in `money.ts` (ONE conversion — never inline a `*100`),
+  the PhenoAge marker map mirrored verbatim from the backend in `bioage.ts`, the Thyrocare
+  catalog helper in `catalog.ts`, and the client-side undo record in `journal.ts`.
+  Four live traps are documented at their point of enforcement: `pricePaise` is NOT `price`
+  (the Zod schema is `z.object()`, so `price` returns 200 and is silently dropped);
+  `thyrocareSkuId` and `skuType` must be sent together or the old type sticks to the new id;
+  there are THREE skuTypes, not two; and the catalog is a HELPER, never a validator — it does
+  not contain every id Thyrocare issues (`COMHECHPA`), so it warns and never blocks.
+  Two further traps have no doc behind them and were found by review: matching a SKU by NAME
+  is a successful lookup and a FAILED identification (675 of 966 prod rows have `id !== name`,
+  and the typed string is what reaches the lab), so green is reserved for `reason === "id"`;
+  and every price-moving path — including the pencil in the table — must carry the magnitude
+  gate and the write-ahead journal, not just the switch dialog.
+  Invariants worth keeping: the price/SKU/active guards live on EVERY commit path, `openRestore`
+  always targets the snapshot's own `testType` (never a hardcoded `primary`), and a lost
+  response leaves the row rendered as UNKNOWN rather than showing the pre-write value.
 - `app/audit-log/` — audit trail viewer
 - `app/admins/` — admin user management
 - `app/infra/` — infra widgets (AI/knowledge service health)

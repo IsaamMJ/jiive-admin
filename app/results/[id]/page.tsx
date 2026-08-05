@@ -184,24 +184,53 @@ export default function ResultDetailPage() {
               // and failed rows still get chronologicalAge 0. Don't remove this gate when
               // that lands unless the backend contract itself changes.
               const isCompleted = result.status === "completed";
-              const delta = isCompleted && result.ageDelta != null ? parseFloat(result.ageDelta) : NaN;
+              // `status: completed` is NOT the same claim as "a bio-age was computed".
+              // The pipeline completes successfully on a panel that simply doesn't carry
+              // all 9 PhenoAge markers — it stores the biomarkers it got and leaves
+              // calculatedAge/ageDelta null. But elevatedFlag is non-nullable
+              // (schema.prisma:289) so it is STILL a confident `false` on those rows.
+              //
+              // Gating on status alone was too shallow and shipped a live defect: on
+              // 2026-08-05, 7 of 15 prod results were completed with calculatedAge null
+              // — Juveira Abdulhameed, Alfanniah and five of Mohamed Jahir's — and every
+              // one rendered "Elevated: No", a clinical all-clear derived from a column
+              // default rather than from any calculation.
+              //
+              // So the real question is "was a bio-age actually produced", and
+              // calculatedAge is the only field that answers it. An absent signal is
+              // never a positive assurance.
+              const hasBioAge = isCompleted && result.calculatedAge != null;
+              const delta = hasBioAge && result.ageDelta != null ? parseFloat(result.ageDelta) : NaN;
+              // Distinguishes "the run failed" from "the run succeeded but this panel
+              // can't produce a bio-age" — different facts, and the operator acts
+              // differently on each.
+              const bioAgeNote = !isCompleted
+                ? "Not evaluated"
+                : "Not calculated — this panel is missing some of the 9 markers";
               return (
                 <>
                   <div><p className="text-muted-foreground">Bio Age</p>
-                    <p className="text-xl font-bold">{isCompleted ? result.calculatedAge : "—"}</p>
+                    <p className="text-xl font-bold">{hasBioAge ? result.calculatedAge : "—"}</p>
                   </div>
                   <div><p className="text-muted-foreground">Chrono Age</p>
+                    {/* Chrono age is real whenever the run completed — it comes from the
+                        patient's DOB, not from the marker panel. Only a FAILED row carries
+                        the fabricated 0. */}
                     <p className="text-xl font-bold">{isCompleted ? result.chronologicalAge : "—"}</p>
                   </div>
                   <div><p className="text-muted-foreground">Delta</p>
                     <p className={`text-xl font-bold ${Number.isFinite(delta) ? (delta < 0 ? "text-green-400" : "text-red-400") : ""}`}>
-                      {isCompleted ? result.ageDelta : "—"}
+                      {hasBioAge ? result.ageDelta : "—"}
                     </p>
                   </div>
                   <div><p className="text-muted-foreground">Status</p><div className="mt-1"><StatusBadge status={result.status} /></div></div>
                   <div><p className="text-muted-foreground">Formula</p><p>{result.formulaVersion}</p></div>
                   <div><p className="text-muted-foreground">Elevated</p>
-                    <p>{isCompleted ? (result.elevatedFlag ? "Yes" : "No") : "Not evaluated"}</p>
+                    {hasBioAge ? (
+                      <p>{result.elevatedFlag ? "Yes" : "No"}</p>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">{bioAgeNote}</p>
+                    )}
                   </div>
                   <div><p className="text-muted-foreground">Date</p><p>{new Date(result.createdAt).toLocaleDateString()}</p></div>
                   <div><p className="text-muted-foreground">Patient</p>

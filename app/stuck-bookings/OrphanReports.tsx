@@ -19,11 +19,14 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import api from "@/lib/api";
+import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
 import {
   type OrphanReport, type OrphanReportList, type OrphanPreflight,
   type OrphanAdoptRequest, type OrphanAdoptResponse, type OrphanSubject,
+  type OrphanReportDiagnostic,
   ORPHAN_DOB_RULE, isDeferredNotFailed, collectionDateFromHint, checkPhone,
+  classifyReportFetchFailure, patientsThyrocareSaysAreReady, rosterContradictsFetchFailure,
 } from "./types";
 
 /**
@@ -279,9 +282,44 @@ function AdoptDialog({
     ? unadopted.length === 0
     : !!pre?.alreadyLinked;
 
+  /**
+   * What Thyrocare actually told us when the report fetch failed. Read the
+   * evidence block above classifyReportFetchFailure() before changing anything
+   * below — the old code read `ourSide` (whose leg failed) as if it answered
+   * "does this order exist", and told an operator that a real, waiting customer
+   * had never existed.
+   */
+  const fetchVerdict = classifyReportFetchFailure(pre?.reportDiagnostic);
+  /**
+   * Thyrocare's OWN roster for this order, saying these people have a report
+   * waiting. A positive statement, and more specific than the order-level fetch
+   * that failed — so on VLC5D31A it outranks the 500.
+   */
+  const rosterReady = patientsThyrocareSaysAreReady(pre);
+  const rosterContradicts = rosterContradictsFetchFailure(pre);
+
+  /**
+   * Why there is no form. We refuse ONLY on a positive signal that there is
+   * nothing to do — everyone adopted, or Thyrocare stating it holds no such
+   * order. A failed fetch is not such a signal: it means we don't know, and
+   * "don't know" must not look like "no".
+   *
+   * The unblocking condition is likewise positive: the roster naming an
+   * unadopted patient whose report IS available. We never open the form on the
+   * mere absence of a "no" — an absent signal is never a positive assurance.
+   *
+   * Opening the form does NOT weaken anything: adopt stays unreachable until a
+   * dry run has been previewed (canAdopt requires `plan`), and the dry run is
+   * the real gate. The point is to let the operator REACH it.
+   */
   const blockedReason =
     nothingLeftToDo ? "Everyone on this order is already linked."
-    : pre && !pre.reportAvailable ? "Thyrocare hasn't published this report yet."
+    : pre && !pre.reportAvailable && rosterReady.length === 0
+      ? fetchVerdict.kind === "vendor_says_no_report"
+        ? "Thyrocare says it holds no such order, so there is no report to link."
+        : fetchVerdict.kind === "not_published_yet"
+          ? "Thyrocare hasn't published this report yet."
+          : "We couldn't read this report from Thyrocare — try again above. Nothing here says the report is missing."
     : null;
 
   const formComplete =
@@ -381,47 +419,115 @@ function AdoptDialog({
                 )}
               </Banner>
             ) : !pre.reportAvailable ? (
-              // `ourSide` decides the whole message: our failed request is worth
-              // retrying, Thyrocare's "no" is not. Never blame the vendor for our
-              // own timeout — that's what nearly sent a ticket to them.
-              pre.reportDiagnostic?.ourSide ? (
-                <Banner tone="warn" icon={<AlertTriangle size={15} />} title="We couldn't fetch the report">
-                  <p>
-                    The request to Thyrocare failed on our side
-                    {pre.reportDiagnostic.kind ? ` (${pre.reportDiagnostic.kind.replace(/_/g, " ")})` : ""}.
-                    The report may well be fine — this is worth retrying.
-                  </p>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="mt-2"
-                    disabled={preLoading}
-                    onClick={onRetryPreflight}
-                  >
-                    {preLoading ? <Loader2 size={13} className="mr-1.5 animate-spin" /> : null}
-                    Try again
-                  </Button>
-                </Banner>
-              ) : pre.reportDiagnostic ? (
-                <Banner tone="info" icon={<Info size={15} />} title="Thyrocare has no report for this order">
-                  <p>
-                    They answered
-                    {pre.reportDiagnostic.httpStatus ? ` (${pre.reportDiagnostic.httpStatus})` : ""} — this
-                    isn&apos;t a connection problem, so retrying gives the same answer. Usually a demo or
-                    mistyped order that never existed at Thyrocare.
-                  </p>
-                  {pre.reportDiagnostic.vendorBody && (
-                    <p className="mt-1 break-all font-mono text-[11px]">
-                      {pre.reportDiagnostic.vendorBody}
+              // Three outcomes, not two. `ourSide` says WHOSE LEG FAILED — it
+              // never said whether the order exists, and reading it that way is
+              // what told an operator that Juveira A H (VLC5D31A) had never
+              // existed while her report sat at Thyrocare. The verdict now comes
+              // from what Thyrocare actually said; see types.ts.
+              <>
+                {fetchVerdict.kind === "vendor_says_no_report" ? (
+                  // The ONLY branch allowed to suggest the order never existed —
+                  // gated on mayNeverHaveExisted, which needs Thyrocare's own
+                  // words (DATA_NOT_FOUND), not merely a failure.
+                  <Banner tone="info" icon={<Info size={15} />} title="Thyrocare has no report for this order">
+                    <p>
+                      They answered
+                      {pre.reportDiagnostic?.httpStatus ? ` (${pre.reportDiagnostic.httpStatus})` : ""} and
+                      said they hold no such order. That&apos;s an answer, not a connection problem, so
+                      retrying gives the same one. Usually a demo or mistyped order that never existed at
+                      Thyrocare.
                     </p>
-                  )}
-                </Banner>
-              ) : (
-                <Banner tone="info" icon={<Clock size={15} />} title="Report not ready yet">
-                  Thyrocare hasn&apos;t published this report. Normal soon after collection — check back
-                  later. Nothing to do now.
-                </Banner>
-              )
+                    <VendorSaid diag={pre.reportDiagnostic} />
+                  </Banner>
+                ) : fetchVerdict.kind === "not_published_yet" ? (
+                  <Banner tone="info" icon={<Clock size={15} />} title="Report not ready yet">
+                    Thyrocare hasn&apos;t published this report. Normal soon after collection — check back
+                    later. Nothing to do now.
+                  </Banner>
+                ) : (
+                  // Our leg failed, their leg failed transiently, or we couldn't
+                  // tell. All three mean the same thing to the operator: we do
+                  // NOT know that the report is missing, and a re-read is the
+                  // right next move. Note the retry survives the backend sending
+                  // retryable:false — it did exactly that on VLC5D31A.
+                  <Banner
+                    tone="warn"
+                    icon={<AlertTriangle size={15} />}
+                    title={
+                      fetchVerdict.kind === "our_request_failed"
+                        ? "We couldn't fetch the report"
+                        : fetchVerdict.kind === "vendor_transient"
+                          ? "Thyrocare's system is having trouble"
+                          : "We couldn't tell why the report didn't load"
+                    }
+                  >
+                    <p>
+                      {fetchVerdict.kind === "our_request_failed" ? (
+                        <>
+                          The request to Thyrocare failed on our side
+                          {pre.reportDiagnostic?.kind
+                            ? ` (${pre.reportDiagnostic.kind.replace(/_/g, " ")})`
+                            : ""}
+                          . The report may well be fine — this is worth retrying.
+                        </>
+                      ) : fetchVerdict.kind === "vendor_transient" ? (
+                        <>
+                          Their server answered, but only to say it timed out or is overloaded.{" "}
+                          <strong>Nothing here says this order or report is missing</strong> — it&apos;s
+                          their system, not this customer. Retrying is exactly the right move and often
+                          works within a minute.
+                        </>
+                      ) : (
+                        <>
+                          Thyrocare&apos;s answer didn&apos;t explain itself, and we won&apos;t guess.{" "}
+                          <strong>This does not mean the report is missing.</strong> Try again — if it
+                          keeps failing, escalate rather than assuming the order is bad.
+                        </>
+                      )}
+                    </p>
+                    <VendorSaid diag={pre.reportDiagnostic} />
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      <Button size="sm" variant="outline" disabled={preLoading} onClick={onRetryPreflight}>
+                        {preLoading ? <Loader2 size={13} className="mr-1.5 animate-spin" /> : null}
+                        Try again
+                      </Button>
+                      <InfoTip label="Re-asks Thyrocare for this report right now. It only reads — nothing is created and nothing is sent to the customer. It costs a live call to their API, which is why it isn't retried automatically on a timer." />
+                    </div>
+                  </Banner>
+                )}
+
+                {/* The payload contradicting itself is the finding, so say it out
+                    loud rather than letting the order-level failure speak for the
+                    whole order. VLC5D31A: the fetch 500'd, while Thyrocare's own
+                    roster for that same order marked Juveira A H's report
+                    available. The roster is per-patient and is a positive
+                    statement — it wins. */}
+                {rosterContradicts && (
+                  <Banner
+                    tone="warn"
+                    icon={<AlertTriangle size={15} />}
+                    title="But Thyrocare's own patient list says the report IS there"
+                  >
+                    <p>
+                      The order-level fetch failed, yet the patient list Thyrocare returned for this same
+                      order marks{" "}
+                      <strong className="text-foreground">
+                        {rosterReady.map((p) => p.name ?? p.leadId).join(", ")}
+                      </strong>{" "}
+                      as having a report available. So this is a <strong>fetch problem, not a missing
+                      report</strong> — {rosterReady.length === 1 ? "this person is" : "these people are"}{" "}
+                      real and still waiting.
+                      <span className="ml-1 inline-flex translate-y-0.5">
+                        <InfoTip label="Two separate answers come back about one order: a fetch for the report itself, and a list of the people on the order. Here the first failed and the second succeeded. The list is the more specific of the two, so when it says a report exists, treat the failure as a fetch problem." />
+                      </span>
+                    </p>
+                    <p className="mt-1">
+                      Try again first. If it keeps failing you can still fill the form below — Preview
+                      will refuse if the link genuinely can&apos;t go through.
+                    </p>
+                  </Banner>
+                )}
+              </>
             ) : !pre.bioAgeReady ? (
               <Banner tone="warn" icon={<AlertTriangle size={15} />} title="Bio-age can't be calculated from this report">
                 <p>
@@ -518,8 +624,30 @@ function AdoptDialog({
               <p className="text-xs text-muted-foreground">Pick a person above to link them.</p>
             )}
 
-            {!nothingLeftToDo && pre.reportAvailable && (!multi || !!selected) && (
+            {/* Never a dead end: when there's no form, say why. `nothingLeftToDo`
+                already has its own banner above, so don't repeat it. */}
+            {blockedReason && !nothingLeftToDo && (
+              <p className="text-[11px] text-muted-foreground">
+                <strong className="text-foreground">No form to fill in:</strong> {blockedReason}
+              </p>
+            )}
+
+            {!nothingLeftToDo && !blockedReason && (!multi || !!selected) && (
               <>
+                {/* The form is open because SOMEONE on this order has a report
+                    waiting — that isn't a statement about the person currently
+                    selected. On a shared order the roster can mark one person
+                    ready and say nothing about the other, and silence is not a
+                    yes. Preview still decides; this just stops the open form
+                    reading as clearance. */}
+                {!pre.reportAvailable && selected && !selected.isReportAvailable && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                    Thyrocare&apos;s list doesn&apos;t confirm a report for{" "}
+                    {selected.name ?? "this person"} — it confirmed one for someone else on this order.
+                    Preview before you link; it will refuse if there&apos;s nothing to attach.
+                  </p>
+                )}
+
                 {/* ── Identity form + vendor hint side by side ───────────── */}
                 <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
                   <div className="flex flex-col gap-3">
@@ -794,6 +922,21 @@ function Banner({
       <p className="flex items-center gap-1.5 text-xs font-semibold">{icon}{title}</p>
       <div className="mt-1 text-[11px] text-muted-foreground">{children}</div>
     </div>
+  );
+}
+
+/**
+ * Thyrocare's answer, verbatim. Shown on every failure branch, not just the
+ * "no report" one — an operator raising a ticket needs the vendor's own words,
+ * and hiding them is how a 500 SERVER_TIMEOUT got summarised as "no such order".
+ * `break-all` because the body is one long unbroken JSON string on a phone.
+ */
+function VendorSaid({ diag }: { diag?: OrphanReportDiagnostic | null }) {
+  if (!diag?.vendorBody) return null;
+  return (
+    <p className="mt-1.5 break-all rounded border border-border/60 bg-background/50 p-1.5 font-mono text-[10px] leading-relaxed">
+      {diag.vendorBody}
+    </p>
   );
 }
 
