@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ChevronDown, ChevronUp, X, UserRound } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, X, UserRound } from "lucide-react";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { InfoTip } from "@/components/InfoTip";
@@ -14,6 +14,25 @@ interface Props {
   locked?: boolean;
   onChange: (id: string | null) => void;
 }
+
+/**
+ * THE SERVER'S CEILING on `GET /llm-playground/patients`.
+ *
+ * `listPatients()` (jiive-backend playground-patient.service.ts:87, :260-273)
+ * over-fetches 250, filters out synthetic test/eval users, and then
+ * `filtered.slice(0, 200)`. When it drops rows it logs
+ * `[playground] patient list capped at 200: N records dropped` — SERVER-SIDE
+ * ONLY. The response is a bare array; the client is never told, and there is no
+ * paging or `?q=` to reach past it.
+ *
+ * That matters because the filter box below is CLIENT-SIDE over whatever
+ * arrived. So "No patients match" has always meant "no match in the rows we
+ * were given", which is a different sentence — dev alone has 5,001 users
+ * (verified live 2026-08-07: `GET /users?limit=1` → `total: 5001`), and a
+ * search that quietly stops at 200 of them tells an operator a patient does not
+ * exist when it does. The copy below states what was actually searched.
+ */
+const PATIENT_LIST_CAP = 200;
 
 /**
  * Filterable patient picker.
@@ -29,6 +48,14 @@ export function PatientPicker({ patientId, disabled, locked, onChange }: Props) 
   const [patients, setPatients] = useState<PatientSummary[]>([]);
   const [loadingList, setLoadingList] = useState(false);
   const [listFetched, setListFetched] = useState(false);
+  /**
+   * The list failed to load. Previously the catch was empty with the comment
+   * "Surface nothing — the panel will just be empty with no error noise", which
+   * rendered a failed fetch as "No patients loaded" — an absent signal shown as
+   * a fact about the data. A picker that says there are no patients when it
+   * simply could not ask is the same defect as a page count shown as a total.
+   */
+  const [listError, setListError] = useState<string | null>(null);
 
   // Selected patient — we keep the summary for the chip label and the detail for the preview.
   const [selectedSummary, setSelectedSummary] = useState<PatientSummary | null>(null);
@@ -62,14 +89,26 @@ export function PatientPicker({ patientId, disabled, locked, onChange }: Props) 
   const fetchList = useCallback(() => {
     if (listFetched) return;
     setLoadingList(true);
+    setListError(null);
     api
       .get<PatientSummary[]>("/llm-playground/patients")
       .then((r) => {
+        // A bare array is the contract. Anything else is a changed shape, not an
+        // empty list, and must not render as "no patients".
+        if (!Array.isArray(r.data)) {
+          setListError("The server didn't return a patient list.");
+          return;
+        }
         setPatients(r.data);
         setListFetched(true);
       })
-      .catch(() => {
-        // Surface nothing — the panel will just be empty with no error noise.
+      .catch((e) => {
+        const err = e as { response?: { status?: number }; message?: string };
+        setListError(
+          err?.response?.status
+            ? `Couldn't load patients (${err.response.status}).`
+            : "Couldn't reach the server.",
+        );
       })
       .finally(() => setLoadingList(false));
   }, [listFetched]);
@@ -152,6 +191,9 @@ export function PatientPicker({ patientId, disabled, locked, onChange }: Props) 
         (p) => p.label.toLowerCase().includes(q) || p.summary.toLowerCase().includes(q),
       )
     : patients;
+
+  /** Sitting exactly on the server's ceiling — there may be patients we never saw. */
+  const atCap = patients.length >= PATIENT_LIST_CAP;
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -246,20 +288,33 @@ export function PatientPicker({ patientId, disabled, locked, onChange }: Props) 
           )}
           style={{ maxHeight: "320px" }}
         >
-          {/* Filter input */}
-          <div className="border-b border-border p-2">
+          {/* Filter input. The placeholder names the scope of the search, because
+              the filter runs over the loaded rows and nothing else. */}
+          <div className="flex flex-col gap-1.5 border-b border-border p-2">
             <input
               ref={inputRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter by label or summary…"
-              aria-label="Filter patients"
+              placeholder={listFetched ? `Filter the ${patients.length} loaded…` : "Filter by label or summary…"}
+              aria-label="Filter loaded patients"
               className={cn(
                 "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs",
                 "placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring",
               )}
             />
+            {/* Only when it can actually be misleading. Below the cap the loaded
+                list IS every patient with results, and saying otherwise would be
+                its own small lie. */}
+            {listFetched && atCap && (
+              <p className="flex items-start gap-1 text-[10px] leading-snug text-amber-500">
+                <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+                <span>
+                  Only the {PATIENT_LIST_CAP} most recent patients are loaded — this filter searches
+                  those, not everyone.
+                </span>
+              </p>
+            )}
           </div>
 
           {/* List */}
@@ -267,9 +322,34 @@ export function PatientPicker({ patientId, disabled, locked, onChange }: Props) 
             {loadingList && (
               <p className="px-3 py-4 text-center text-xs text-muted-foreground">Loading…</p>
             )}
-            {!loadingList && filtered.length === 0 && (
+            {/* A failed fetch is its own state. It is NOT "no patients". */}
+            {!loadingList && listError && (
+              <div className="flex flex-col items-center gap-1.5 px-3 py-4 text-center">
+                <p className="flex items-center gap-1 text-xs font-medium text-amber-500">
+                  <AlertTriangle size={11} className="shrink-0" />
+                  {listError}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  We couldn&apos;t read the list — this doesn&apos;t mean there are no patients.
+                </p>
+                <button
+                  type="button"
+                  onClick={fetchList}
+                  className="text-[11px] text-primary underline-offset-2 hover:underline"
+                >
+                  Try again
+                </button>
+              </div>
+            )}
+            {!loadingList && !listError && filtered.length === 0 && (
               <p className="px-3 py-4 text-center text-xs text-muted-foreground">
-                {listFetched ? "No patients match." : "No patients loaded."}
+                {!listFetched
+                  ? "No patients loaded."
+                  : q
+                    ? /* NEVER a bare "No patients match" — the filter only ever saw
+                         what loaded, and at the cap that is a fraction of them. */
+                      `No match in the ${patients.length} loaded${atCap ? ` (of more than ${PATIENT_LIST_CAP})` : ""}.`
+                    : "No patients with results yet."}
               </p>
             )}
             {filtered.map((p) => (

@@ -11,10 +11,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import api from "@/lib/api";
-import type { ConversationItem, CursorPage } from "./types";
+import type { BookingItem, ConversationItem, CursorPage, ResultItem } from "./types";
 
 /** The server's default. Also its documented sweet spot; 200 is the ceiling. */
 export const CONVO_PAGE_SIZE = 50;
+
+/**
+ * Bookings and results, per account, are SHORT lists — the backend measured them
+ * before declining to add indexes for them (handoff §6: the busiest prod account
+ * is under twenty bookings, a user's results are "single-digit"). Live on
+ * 2026-08-07 the biggest prod account had 10 bookings and 6 results. So one page
+ * of 50 loads the whole thing in practice and "load older" is the rare path, not
+ * the normal one. It still exists, because "in practice" is not "always".
+ */
+export const COLLECTION_PAGE_SIZE = 50;
 
 const LIMIT_MIN = 1;
 const LIMIT_MAX = 200;
@@ -24,16 +34,28 @@ const LIMIT_MAX = 200;
  *
  * Thrown ONLY for a 404, and it is the ONLY condition that may make a caller
  * fall back to the aggregate. A 400 or a 500 is a real failure and must reach
- * the operator as one — quietly rendering the legacy 50-message array when the
- * server is actually broken is precisely the accepted-and-ignored class this
- * whole workstream exists to kill.
+ * the operator as one — quietly rendering the legacy array when the server is
+ * actually broken is precisely the accepted-and-ignored class this whole
+ * workstream exists to kill.
  *
- * Live on 2026-08-07: dev (jiive-dev.isaam.dev) serves it; prod
- * (d3pvjhguhk37b0.cloudfront.net) answers
- * `{"message":"Cannot GET /api/v1/admin/users/<id>/conversations","statusCode":404}`.
- * A "user not found" 404 cannot be confused with this in practice: the page
- * only reaches here after `GET /users/:id` has already returned that user, and
- * if the user were gone the page renders "User not found" instead of a tab.
+ * As of 2026-08-07 ALL THREE endpoints answer 200 on BOTH backends — dev and
+ * prod. Re-verified against prod the same day: conversations `total: 117`,
+ * bookings `total: 10`, results `total: 6` for real accounts. So on today's
+ * deployments this class is never thrown, and that is the point of saying so
+ * here: an earlier version of this comment described prod as 404ing, which was
+ * true for about forty minutes and then silently stopped being true, and a
+ * reader following it would have gone looking down the fallback path for a
+ * behaviour that no longer exists.
+ *
+ * The class and the fallback both STAY, for the reason the 404 existed at all:
+ * the two backends are promoted independently — prod answered
+ * `{"message":"Cannot GET /api/v1/admin/users/<id>/conversations","statusCode":404}`
+ * and then, ~40 minutes later and with no change here, 200 — so a rollback is a
+ * 404 again, and the difference between "not deployed here" and "broken here"
+ * has to survive it. A "user not found" 404 cannot be confused with this in
+ * practice: the page only reaches here after `GET /users/:id` has already
+ * returned that user, and if the user were gone the page renders "User not
+ * found" instead of a tab.
  */
 export class EndpointNotDeployedError extends Error {
   constructor(readonly path: string) {
@@ -50,8 +72,13 @@ function statusOf(e: unknown): number | undefined {
  * The server's own message wins wherever it exists — a paraphrase has cost us
  * debugging hours before. Nest sends `message` as either a string or an array
  * of validation strings.
+ *
+ * Shared by all three collections: the failure modes are identical (the same
+ * validation pipe produces `limit must be between 1 and 200, got 201` for every
+ * one of them — verified live on both backends), so a per-collection copy would
+ * only be three places to fix the same wording.
  */
-export function conversationErrorMessage(e: unknown): string {
+export function userCollectionErrorMessage(e: unknown): string {
   if (e instanceof EndpointNotDeployedError) return e.message;
   const err = e as {
     response?: { status?: number; data?: { message?: string | string[]; error?: string } };
@@ -69,9 +96,13 @@ export function conversationErrorMessage(e: unknown): string {
  * or — far worse — a page count where a total belongs. `total` and `hasMore`
  * are load-bearing: the tab label states `total` as a fact, and `hasMore`
  * decides whether the operator is told there is older history.
+ *
+ * Generic over the item type on purpose. The three endpoints share ONE envelope
+ * (handoff §1) and the guard is about the envelope, not the rows — a second
+ * copy per collection is how one of them ends up without the `total` check.
  */
-function assertCursorPage(path: string, body: unknown): asserts body is CursorPage<ConversationItem> {
-  const b = body as Partial<CursorPage<ConversationItem>> | null;
+function assertCursorPage<T>(path: string, body: unknown): asserts body is CursorPage<T> {
+  const b = body as Partial<CursorPage<T>> | null;
   if (!b || !Array.isArray(b.items)) {
     throw new Error(`${path} returned no \`items\` array — the envelope has changed.`);
   }
@@ -97,25 +128,74 @@ function assertCursorPage(path: string, body: unknown): asserts body is CursorPa
  * The WALK is backwards in time regardless: `nextCursor` points at the OLDEST
  * row on the page, i.e. `items[0]`, and `before=<cursor>` fetches the page
  * before it. Each page therefore PREPENDS to the transcript.
- *
- * `limit` is validated here, not clamped: the server returns 400 for anything
- * outside 1..200 (verified live — `limit=0` and `limit=201` both 400), and a
- * silent clamp would leave a caller unable to tell a satisfied request from a
- * quietly shrunk one. A malformed `before` is likewise a 400, never a silent
- * restart at page 1 (verified live).
  */
 export async function fetchConversationsPage(
   userId: string,
-  opts: { limit?: number; before?: string | null } = {},
+  opts: PageOpts = {},
 ): Promise<CursorPage<ConversationItem>> {
-  const limit = opts.limit ?? CONVO_PAGE_SIZE;
+  return fetchCursorPage<ConversationItem>(userId, "conversations", opts, CONVO_PAGE_SIZE);
+}
+
+/**
+ * One page of a user's BOOKINGS.
+ *
+ * `items` come back DESCENDING — newest first, matching the aggregate (handoff
+ * §3, confirmed live). Do NOT normalise or re-sort: the server owns the order,
+ * the cursor encodes it, and a client-side re-sort would put the rows in an
+ * order the next `before=` page does not continue from.
+ *
+ * "Older" therefore means FURTHER DOWN the table, not further up as it does for
+ * the chat transcript — the walk direction is the same, but the visual end it
+ * arrives at is the opposite one.
+ */
+export async function fetchBookingsPage(
+  userId: string,
+  opts: PageOpts = {},
+): Promise<CursorPage<BookingItem>> {
+  return fetchCursorPage<BookingItem>(userId, "bookings", opts, COLLECTION_PAGE_SIZE);
+}
+
+/** One page of a user's RESULTS. Descending, exactly as bookings — see above. */
+export async function fetchResultsPage(
+  userId: string,
+  opts: PageOpts = {},
+): Promise<CursorPage<ResultItem>> {
+  return fetchCursorPage<ResultItem>(userId, "results", opts, COLLECTION_PAGE_SIZE);
+}
+
+export interface PageOpts {
+  limit?: number;
+  before?: string | null;
+}
+
+/**
+ * The one request. All three collections are the same call against a different
+ * path segment, so they are the same function — the alternative is three copies
+ * of the limit check, the cursor encoding and the 404 translation, and the bug
+ * this whole workstream is about is exactly what happens when one copy of a rule
+ * quietly stops matching the others.
+ *
+ * `limit` is validated here, not clamped: the server returns 400 for anything
+ * outside 1..200 — verified live on BOTH backends and on all three paths,
+ * `limit=201` → `{"message":"limit must be between 1 and 200, got 201",…}` — and
+ * a silent clamp would leave a caller unable to tell a satisfied request from a
+ * quietly shrunk one. A malformed `before` is likewise a 400, never a silent
+ * restart at page 1.
+ */
+async function fetchCursorPage<T>(
+  userId: string,
+  collection: "conversations" | "bookings" | "results",
+  opts: PageOpts,
+  defaultLimit: number,
+): Promise<CursorPage<T>> {
+  const limit = opts.limit ?? defaultLimit;
   if (!Number.isInteger(limit) || limit < LIMIT_MIN || limit > LIMIT_MAX) {
     throw new Error(
       `Refusing to request limit=${limit}: the server accepts ${LIMIT_MIN}–${LIMIT_MAX} and 400s outside it.`,
     );
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/conversations`;
+  const path = `/users/${encodeURIComponent(userId)}/${collection}`;
   const params = new URLSearchParams({ limit: String(limit) });
   // Verbatim, URL-encoded. The cursor is an opaque blob; building or editing
   // one here would make "what this list is ordered by" a breaking change.
@@ -123,7 +203,7 @@ export async function fetchConversationsPage(
 
   try {
     const r = await api.get(`${path}?${params.toString()}`);
-    assertCursorPage(path, r.data);
+    assertCursorPage<T>(path, r.data);
     return r.data;
   } catch (e) {
     if (statusOf(e) === 404) throw new EndpointNotDeployedError(path);

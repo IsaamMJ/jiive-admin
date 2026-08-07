@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
-import { addRemark, getCallQueue, getCallStats, callErrorMessage } from "./api";
+import { addRemark, getCallQueue, getCallStats, callErrorMessage, QUEUE_LIMIT } from "./api";
 import {
   telHref,
   type CallQueueRow,
@@ -108,8 +108,45 @@ function RemarkBox({ row, onSaved }: { row: CallQueueRow; onSaved: () => void })
   );
 }
 
+/**
+ * How many people are waiting, stated as a number.
+ *
+ * The queue used to render no count anywhere, so 200 people due a call looked
+ * exactly like 50 — the whole point of a worklist is knowing how much of it
+ * there is. `total` is the server's own count, taken before it slices the page
+ * (verified live), so it is safe to state as a fact.
+ *
+ * `null` is a fourth case, not a zero: the server sent no count. We say we don't
+ * know rather than print the number of rows we happen to be holding.
+ */
+function QueueCount({ total, loaded }: { total: number | null; loaded: number }) {
+  if (total === null) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        {loaded} shown
+        <InfoTip label="The server didn't send a total this time, so we can only tell you how many rows are on screen — not how many people are waiting. Refresh to try again." />
+      </span>
+    );
+  }
+  const short = loaded < total;
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      {short ? `showing ${loaded} of ${total}` : `${total} waiting`}
+      <InfoTip
+        label={
+          short
+            ? `${total} people are due a call. This screen loads the first ${QUEUE_LIMIT} in priority order, so the rest appear as you work through these.`
+            : "How many people are due a call right now, counted by the server. Everyone waiting is on this screen."
+        }
+      />
+    </span>
+  );
+}
+
 export default function CallsPage() {
   const [rows, setRows] = useState<CallQueueRow[]>([]);
+  /** The server's count of everyone waiting. `null` = it didn't tell us. */
+  const [queueTotal, setQueueTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -128,6 +165,7 @@ export default function CallsPage() {
         // never re-rank — incident rows come first because the backend says so.
         const sorted = [...r.queue].sort((a, b) => a.priority - b.priority);
         setRows(sorted);
+        setQueueTotal(r.total);
         setError(null);
       })
       .catch((e) => setError(callErrorMessage(e)))
@@ -163,12 +201,17 @@ export default function CallsPage() {
       <div className="flex flex-col gap-5 pb-24 sm:pb-8">
         <CallStatsStrip stats={stats} loading={statsLoading} error={statsError} />
 
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-1.5">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Who to call next
-            </h2>
-            <InfoTip label="Sorted by priority: anyone we hurt (an incident) first, then first-time customers, then people who scored us low, then every fifth repeat customer. Everyone else isn't here on purpose — you can't call everyone, and this queue is the shortlist worth your time." />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                Who to call next
+              </h2>
+              <InfoTip label="Sorted by priority: anyone we hurt (an incident) first, then first-time customers, then people who scored us low, then every fifth repeat customer. Everyone else isn't here on purpose — you can't call everyone, and this queue is the shortlist worth your time." />
+            </div>
+            {/* Only once a load has actually succeeded. A count next to a
+                skeleton or an error would be a number we don't have. */}
+            {!loading && !error && <QueueCount total={queueTotal} loaded={rows.length} />}
           </div>
           <Button variant="outline" size="sm" onClick={() => { load(); loadStats(); }} disabled={loading}>
             <RotateCw size={14} className={cn("mr-1.5", loading && "animate-spin")} />

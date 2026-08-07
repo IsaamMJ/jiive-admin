@@ -251,7 +251,15 @@ export interface CallQueueRow {
 
 export interface CallQueueResponse {
   queue: CallQueueRow[];
-  total: number;
+  /**
+   * How many people are due a call IN TOTAL — counted server-side before the
+   * page is sliced off (verified live: `?limit=1` still reports the full count).
+   *
+   * NULLABLE on purpose. `null` means the server did not send a count, and the
+   * screen must say so rather than substitute `queue.length`: a page is not a
+   * total, and 200 people waiting must never render identically to 50.
+   */
+  total: number | null;
 }
 
 // ── POST /calls ──────────────────────────────────────────────────────────────

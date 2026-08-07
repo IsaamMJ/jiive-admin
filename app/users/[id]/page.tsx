@@ -29,13 +29,25 @@ import api from "@/lib/api";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
 import {
+  COLLECTION_PAGE_SIZE,
   CONVO_PAGE_SIZE,
   EndpointNotDeployedError,
-  conversationErrorMessage,
+  fetchBookingsPage,
   fetchConversationsPage,
+  fetchResultsPage,
+  userCollectionErrorMessage,
+  type PageOpts,
 } from "../api";
-import { gapBeforeId, mergeMessages } from "../paging";
-import type { AggregateMessage, ConvButton, ConvMedia, ConversationItem } from "../types";
+import { appendPage, gapBeforeId, mergeMessages } from "../paging";
+import type {
+  AggregateMessage,
+  BookingItem,
+  ConvButton,
+  ConvMedia,
+  ConversationItem,
+  CursorPage,
+  ResultItem,
+} from "../types";
 
 /**
  * The chat keeps arriving after the page loaded. Poll while the operator is
@@ -68,10 +80,11 @@ const CONVO_POLL_MS = 10000;
  * the tab reads the real total and the operator can walk back through the whole
  * transcript. See docs/handoff-backend-user-detail-pagination-RESPONSE.md.
  *
- * It is NOT yet on prod: verified live, prod 404s the route while dev serves it.
- * So this constant, and the amber banner and the "+" it drives, stay exactly as
- * they were for the 404 fallback — where every word of them is still accurate.
- * Delete them once prod has the endpoint and the fallback is dead code.
+ * Both dev and prod serve it as of 2026-08-07 — prod started to DURING the
+ * morning it was wired (it 404d, then 200d ~40 minutes later with no change
+ * here). So this constant, the amber banner and the "+" it drives stay for the
+ * 404 path, where every word of them is still accurate: the two backends are
+ * promoted independently and a rollback puts us straight back on it.
  */
 const CONVO_SERVER_CAP = 50;
 
@@ -226,27 +239,19 @@ interface UserDetail {
    * Shape (and the reason `displayLabel` beats `content`) lives in ../types.
    */
   conversations: AggregateMessage[];
-  bookings: {
-    id: string; patientName: string; testType: string; appointmentDate: string;
-    appointmentTime: string; status: string; amount: number; address: { city: string; pincode: number };
-  }[];
+  /**
+   * The aggregate's bookings and results. UNLIKE `conversations`, these two are
+   * NOT capped server-side (handoff §7 — the aggregate returns them unbounded),
+   * so on the fallback path their `.length` IS the honest count and is rendered
+   * as one. That is the whole difference between these tabs and the chat tab.
+   *
+   * They are read only when the per-collection endpoint is absent (404). The
+   * item shape is shared with the endpoint's — see ../types, where the
+   * byte-identity was checked against live prod rather than assumed.
+   */
+  bookings: BookingItem[];
   memories: { memoryType: string; content: string; relevanceScore: string; createdAt: string }[];
-  results: {
-    id: string; testType: string; calculatedAge: string; chronologicalAge: string;
-    ageDelta: string; status: string; createdAt: string;
-    retestReminderOptIn: boolean; retestReminderSentAt: string | null;
-    /** Full shareable report link (latest non-expired token), or null if none. */
-    reportUrl?: string | null;
-    // WHO this result is for. One account books for several people, so a result
-    // is not necessarily the account holder's. `patientName` is the test subject;
-    // `relationship` is how they relate to the account holder (FamilyMember, id-
-    // linked — not a name match). "self" = the account holder; null = an uploaded
-    // report with no booking yet (shows the account-holder name, no relationship).
-    patientName?: string | null;
-    relationship?: string | null;
-    /** FamilyMember id — lets "Ask AI" deep-link to THIS person's context. */
-    patientId?: string | null;
-  }[];
+  results: ResultItem[];
 }
 
 /**
@@ -278,7 +283,7 @@ function PatientCell({
   );
 }
 
-type ResultRow = UserDetail["results"][number];
+type ResultRow = ResultItem;
 
 /**
  * Group a person's results under one heading. One account is a household, so
@@ -979,6 +984,267 @@ interface ConvoView {
   gapBeforeId: string | null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Bookings and Results — the same "state a real total" machinery, for the two
+// tabs that were still counting the aggregate.
+//
+// Until now `Bookings ({bookings.length})` and `Results ({results.length})`
+// counted whatever the aggregate happened to hand back, while
+// `GET /users/:id/bookings` and `GET /users/:id/results` — which state a real
+// `total` — sat deployed and unread on both backends. That is the same defect
+// the Conversations tab was rebuilt to remove, one endpoint later.
+//
+// Three differences from the chat tab, all of them deliberate:
+//   1. NO POLL. A booking does not arrive while you are reading the tab the way
+//      a WhatsApp message does. The page's own Refresh is the refresh.
+//   2. Rows are DESCENDING, so a further page appends BELOW (see appendPage).
+//   3. The fallback count is honest. The aggregate caps `conversations` at 50
+//      but leaves these two unbounded, so on a 404 backend `.length` is the
+//      real number and gets stated plainly — no "+", no banner.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What a collection tab is currently reading, and how it got there. Same three
+ * outcomes as ConvoView, same reason `forUserId` stamps the payload: the App
+ * Router reuses this component across /users/a → /users/b, and an unstamped
+ * list would show one customer's bookings under another customer's name until
+ * the refetch landed.
+ */
+interface CollectionView<T> {
+  forUserId: string;
+  mode: "paginated" | "fallback";
+  /** Descending, newest first — the order the server returns. Never re-sorted. */
+  items: T[];
+  /** The server's real count. Never a page size. */
+  total: number;
+  /** Observed server-side. Never inferred from `total > items.length`. */
+  hasMore: boolean;
+  /** Opaque; points at the oldest row loaded. Passed back verbatim. */
+  cursor: string | null;
+}
+
+/**
+ * Probe one collection endpoint once per user id and page through it.
+ *
+ * ONE hook for both tabs rather than two copies of the same state machine —
+ * the 404-only fallback rule is the part that must not drift, and two copies is
+ * how one of them ends up treating a 500 as "not deployed".
+ *
+ * `fetchPage` must be a module-level function (stable identity), not an inline
+ * closure, or the probe effect re-runs forever.
+ */
+function usePagedCollection<T extends { id: string }>(
+  userId: string,
+  fetchPage: (userId: string, opts?: PageOpts) => Promise<CursorPage<T>>,
+) {
+  const [view, setView] = useState<CollectionView<T> | null>(null);
+  /** A real failure (400/500/changed envelope). NEVER satisfied by the aggregate. */
+  const [error, setError] = useState<{ forUserId: string; message: string } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** A failed "load older" — the rows already loaded stay on screen beside it. */
+  const [moreError, setMoreError] = useState<string | null>(null);
+  /**
+   * An operator-initiated retry is in flight. Distinct from `probing`: the
+   * error card clears `error` before it re-requests, so without this the card
+   * would unmount mid-retry and the button could be double-fired.
+   */
+  const [retrying, setRetrying] = useState(false);
+  const probedForRef = useRef<string | null>(null);
+
+  const probe = useCallback(async () => {
+    setError(null);
+    setMoreError(null);
+    try {
+      const page = await fetchPage(userId, { limit: COLLECTION_PAGE_SIZE });
+      setView({
+        forUserId: userId,
+        mode: "paginated",
+        items: page.items,
+        total: page.total,
+        hasMore: page.hasMore,
+        cursor: page.nextCursor,
+      });
+    } catch (e) {
+      // A 404 — and ONLY a 404 — means the route is not on this backend, so the
+      // tab reverts to the aggregate for the rest of this user's visit. A 400 or
+      // a 500 is a broken server, and a table that looks fine while the server is
+      // broken is the thing being removed here.
+      if (e instanceof EndpointNotDeployedError) {
+        setView({ forUserId: userId, mode: "fallback", items: [], total: 0, hasMore: false, cursor: null });
+        return;
+      }
+      setError({ forUserId: userId, message: userCollectionErrorMessage(e) });
+    }
+  }, [userId, fetchPage]);
+
+  /** Re-run the probe after a real failure. Not a poll — the operator asked. */
+  const retry = useCallback(async () => {
+    setRetrying(true);
+    try {
+      await probe();
+    } finally {
+      setRetrying(false);
+    }
+  }, [probe]);
+
+  useEffect(() => {
+    if (probedForRef.current === userId) return;
+    probedForRef.current = userId;
+    setView(null);
+    void probe();
+  }, [userId, probe]);
+
+  /**
+   * Walk one page further back and append it.
+   *
+   * `total` is re-read from the page rather than kept, so a booking made while
+   * the operator was reading moves the stated count instead of leaving a number
+   * that no longer matches the rows under it.
+   */
+  const loadMore = useCallback(async (v: CollectionView<T>) => {
+    if (loadingMore || !v.hasMore || !v.cursor) return;
+    setLoadingMore(true);
+    setMoreError(null);
+    try {
+      const page = await fetchPage(userId, { limit: COLLECTION_PAGE_SIZE, before: v.cursor });
+      setView((prev) => {
+        if (!prev || prev.forUserId !== userId || prev.mode !== "paginated") return prev;
+        return {
+          ...prev,
+          items: appendPage(prev.items, page.items),
+          total: page.total,
+          hasMore: page.hasMore,
+          cursor: page.nextCursor,
+        };
+      });
+    } catch (e) {
+      setMoreError(userCollectionErrorMessage(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [userId, fetchPage, loadingMore]);
+
+  const stamped = view && view.forUserId === userId ? view : null;
+  const errorMessage = error && error.forUserId === userId ? error.message : null;
+
+  return {
+    view: stamped,
+    error: errorMessage,
+    /**
+     * Nothing has arrived and nothing has failed yet — derived, not flagged.
+     * A retry re-enters this state, so it is "loading" for the skeleton too.
+     */
+    probing: !stamped && !errorMessage,
+    paginated: stamped?.mode === "paginated",
+    loadingMore,
+    moreError,
+    loadMore,
+    retry,
+    retrying,
+  };
+}
+
+/**
+ * The tab label. Three different numbers, because three different things are
+ * known — the same rule the Conversations tab already follows:
+ *   paginated — the server's real total, stated plainly.
+ *   fallback  — the aggregate's length, which for these two collections IS the
+ *               real count (they are not capped there).
+ *   error     — NO NUMBER AT ALL. We do not know, and printing the aggregate's
+ *               length here would read exactly like knowing.
+ */
+function CollectionTabLabel({
+  name, view, error, fallbackCount,
+}: { name: string; view: CollectionView<unknown> | null; error: string | null; fallbackCount: number }) {
+  if (view?.mode === "paginated") return <>{`${name} (${view.total})`}</>;
+  if (error) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        {name}
+        <AlertTriangle size={12} className="text-amber-400" />
+      </span>
+    );
+  }
+  return <>{`${name} (${fallbackCount})`}</>;
+}
+
+/**
+ * A collection that could not be read. Deliberately shows NOTHING from the
+ * aggregate: an empty-looking table over a broken endpoint is indistinguishable
+ * from a customer with no bookings, and that is the whole bug class.
+ */
+function CollectionErrorCard({
+  noun, message, onRetry, retrying,
+}: { noun: string; message: string; onRetry: () => void; retrying: boolean }) {
+  return (
+    <Card>
+      <CardContent className="flex flex-col items-start gap-2 py-6">
+        <p className="flex items-center gap-1.5 text-sm font-medium">
+          <AlertTriangle size={15} className="shrink-0 text-amber-400" />
+          Couldn&apos;t load {noun}
+        </p>
+        <p className="text-xs break-words text-muted-foreground">{message}</p>
+        <p className="text-[11px] text-muted-foreground/70">
+          This is a failure to read, not an empty list. Nothing is being shown because we cannot
+          say what this customer has.
+        </p>
+        <Button variant="outline" size="sm" className="mt-1 h-7 gap-1.5 text-xs" onClick={onRetry} disabled={retrying}>
+          <RefreshCw size={12} className={retrying ? "animate-spin" : ""} />
+          {retrying ? "Retrying…" : "Try again"}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * "N of M loaded" plus the button that fetches the rest. Rendered only on the
+ * paginated path — on the fallback path there is no `total` to be short of, and
+ * a "1 of 1 loaded" under every table is noise.
+ *
+ * Hidden entirely when everything is loaded AND nothing failed, which for these
+ * two collections is the overwhelmingly common case (biggest prod account: 10
+ * bookings, one page).
+ */
+function CollectionFooter<T extends { id: string }>({
+  view, noun, loadingMore, moreError, onLoadMore,
+}: {
+  view: CollectionView<T>;
+  noun: string;
+  loadingMore: boolean;
+  moreError: string | null;
+  onLoadMore: (v: CollectionView<T>) => void;
+}) {
+  if (!view.hasMore && !moreError) return null;
+  return (
+    <div className="flex flex-col gap-2 border-t border-border bg-muted/20 px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+          {view.items.length} of {view.total} loaded
+          <InfoTip label={`${view.total} is the real number of ${noun} for this customer, counted by the server — not the number of rows on screen. The rest load when you ask for them.`} />
+        </span>
+        {view.hasMore && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => onLoadMore(view)}
+            disabled={loadingMore}
+          >
+            {loadingMore ? <Loader2 size={12} className="animate-spin" /> : <ArrowUp size={12} className="rotate-180" />}
+            {loadingMore ? "Loading…" : `Load older ${noun}`}
+          </Button>
+        )}
+      </div>
+      {moreError && (
+        <p className="text-[11px] text-amber-400">
+          Couldn&apos;t load the older {noun}: {moreError} — the rows above are still correct.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function UserDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [data, setData] = useState<UserDetail | null>(null);
@@ -1013,6 +1279,13 @@ export default function UserDetailPage() {
    * moment older messages arrive, which makes the feature unusable.
    */
   const pendingScrollRestoreRef = useRef<{ height: number; top: number } | null>(null);
+
+  // ── Bookings / Results: the paginated collections ─────────────────────────
+  // Probed on mount, not on tab-open, because the TAB LABEL states the count —
+  // the number has to be true before the operator clicks, and a label that
+  // filled in only after you opened the tab would be worse than no label.
+  const bookingsTab = usePagedCollection<BookingItem>(id, fetchBookingsPage);
+  const resultsTab = usePagedCollection<ResultItem>(id, fetchResultsPage);
 
   const [txs, setTxs] = useState<CreditTx[]>([]);
   const [txTotal, setTxTotal] = useState(0);
@@ -1095,7 +1368,7 @@ export default function UserDetailPage() {
         });
         return;
       }
-      setConvoError({ forUserId: id, message: conversationErrorMessage(e) });
+      setConvoError({ forUserId: id, message: userCollectionErrorMessage(e) });
     }
   }, [id]);
 
@@ -1170,7 +1443,7 @@ export default function UserDetailPage() {
       });
     } catch (e) {
       pendingScrollRestoreRef.current = null;
-      setOlderError(conversationErrorMessage(e));
+      setOlderError(userCollectionErrorMessage(e));
     } finally {
       setLoadingOlder(false);
     }
@@ -1377,6 +1650,12 @@ export default function UserDetailPage() {
   const memLoading = !memView && !memErr;
   const accountHolder = user.name ?? user.whatsappPhone;
 
+  // The rows each collection tab actually renders. On the paginated path the
+  // aggregate's array is not read AT ALL — mixing the two would put rows on
+  // screen that the stated total was not counted over.
+  const bookingRows = bookingsTab.view?.mode === "paginated" ? bookingsTab.view.items : bookings;
+  const resultRows = resultsTab.view?.mode === "paginated" ? resultsTab.view.items : results;
+
   return (
     <AdminLayout title={user.name ?? user.whatsappPhone}>
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col gap-4">
@@ -1400,8 +1679,12 @@ export default function UserDetailPage() {
               `Conversations (${conversations.length}${conversations.length >= CONVO_SERVER_CAP ? "+" : ""})`
             )}
           </TabsTrigger>
-          <TabsTrigger value="bookings">Bookings ({bookings.length})</TabsTrigger>
-          <TabsTrigger value="results">Results ({results.length})</TabsTrigger>
+          <TabsTrigger value="bookings">
+            <CollectionTabLabel name="Bookings" view={bookingsTab.view} error={bookingsTab.error} fallbackCount={bookings.length} />
+          </TabsTrigger>
+          <TabsTrigger value="results">
+            <CollectionTabLabel name="Results" view={resultsTab.view} error={resultsTab.error} fallbackCount={results.length} />
+          </TabsTrigger>
           {/* Falls back to the legacy array's length until the read-back lands —
               same table, same unfiltered total, so the number doesn't jump. */}
           <TabsTrigger value="memories">Memories ({memView?.counts.total ?? memories.length})</TabsTrigger>
@@ -1603,6 +1886,19 @@ export default function UserDetailPage() {
 
         {/* Bookings */}
         <TabsContent value="bookings">
+          {bookingsTab.probing ? (
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-8" />
+              <Skeleton className="h-40" />
+            </div>
+          ) : bookingsTab.error ? (
+            <CollectionErrorCard
+              noun="bookings"
+              message={bookingsTab.error}
+              onRetry={() => { void bookingsTab.retry(); }}
+              retrying={bookingsTab.retrying}
+            />
+          ) : (
           <div className="rounded-lg border border-border overflow-hidden">
             <Table>
               <TableHeader>
@@ -1617,9 +1913,9 @@ export default function UserDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {bookings.length === 0 ? (
+                {bookingRows.length === 0 ? (
                   <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">No bookings</TableCell></TableRow>
-                ) : bookings.map((b) => (
+                ) : bookingRows.map((b) => (
                   <TableRow key={b.id}>
                     <TableCell className="font-medium">{b.patientName}</TableCell>
                     <TableCell className="capitalize">{b.testType.replace(/_/g, " ")}</TableCell>
@@ -1632,11 +1928,34 @@ export default function UserDetailPage() {
                 ))}
               </TableBody>
             </Table>
+            {bookingsTab.view?.mode === "paginated" && (
+              <CollectionFooter
+                view={bookingsTab.view}
+                noun="bookings"
+                loadingMore={bookingsTab.loadingMore}
+                moreError={bookingsTab.moreError}
+                onLoadMore={bookingsTab.loadMore}
+              />
+            )}
           </div>
+          )}
         </TabsContent>
 
         {/* Results */}
         <TabsContent value="results">
+          {resultsTab.probing ? (
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-8" />
+              <Skeleton className="h-40" />
+            </div>
+          ) : resultsTab.error ? (
+            <CollectionErrorCard
+              noun="results"
+              message={resultsTab.error}
+              onRetry={() => { void resultsTab.retry(); }}
+              retrying={resultsTab.retrying}
+            />
+          ) : (
           <div className="rounded-lg border border-border overflow-hidden">
             <Table>
               <TableHeader>
@@ -1653,9 +1972,9 @@ export default function UserDetailPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {results.length === 0 ? (
+                {resultRows.length === 0 ? (
                   <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-6">No results</TableCell></TableRow>
-                ) : groupResultsByPatient(results).map((group) => (
+                ) : groupResultsByPatient(resultRows).map((group) => (
                   <Fragment key={group.key}>
                     {/* One heading per person — carries who they are + one "Ask AI"
                         that loads THIS patient's whole history, never blended. */}
@@ -1716,7 +2035,17 @@ export default function UserDetailPage() {
                 ))}
               </TableBody>
             </Table>
+            {resultsTab.view?.mode === "paginated" && (
+              <CollectionFooter
+                view={resultsTab.view}
+                noun="results"
+                loadingMore={resultsTab.loadingMore}
+                moreError={resultsTab.moreError}
+                onLoadMore={resultsTab.loadMore}
+              />
+            )}
           </div>
+          )}
         </TabsContent>
 
         {/* Memories — see the block comment above `MemoryFact` for why this reads

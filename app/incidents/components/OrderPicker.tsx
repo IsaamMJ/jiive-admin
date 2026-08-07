@@ -29,9 +29,19 @@ function normalizeId(raw: string): string {
  * plain "type an order ID and press Enter" field so filing is never blocked on a
  * dropdown that wouldn't load. Enter also adds the typed value in the normal case,
  * covering an order that falls outside the fetched window.
+ *
+ * Degrades HONESTLY on a PARTIAL load too. listBookingsForPicker used to ask for
+ * limit=500 over a 210-day window; the server clamps that to 200 in silence
+ * (admin.controller.ts:2032), so on dev 293 of 493 bookings never reached this
+ * dropdown and nothing said so — an operator filing an incident about a real
+ * customer simply could not find their order. It now pages to completeness, and
+ * on the residual case where it still can't, `coverageNote` prints under the
+ * field: "no match" on a truncated list and "no match" on a complete one look
+ * identical, and the operator would read the first as "that order doesn't exist".
  */
 export function OrderPicker({ value, onChange, disabled }: Props) {
   const [bookings, setBookings] = useState<PickerBooking[]>([]);
+  const [coverageNote, setCoverageNote] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -40,9 +50,10 @@ export function OrderPicker({ value, onChange, disabled }: Props) {
   useEffect(() => {
     let alive = true;
     listBookingsForPicker()
-      .then((b) => {
+      .then((r) => {
         if (!alive) return;
-        setBookings(b);
+        setBookings(r.bookings);
+        setCoverageNote(r.coverageNote);
         setLoadState("ready");
       })
       .catch(() => {
@@ -86,8 +97,16 @@ export function OrderPicker({ value, onChange, disabled }: Props) {
               (b.patientName ?? "").toLowerCase().includes(q) ||
               b.appointmentDate.toLowerCase().includes(q)
           );
-    return rows.slice(0, 50); // cap the rendered list — the window can hold 500
+    // Caps only what is RENDERED. The full set stays searchable, so typing
+    // narrows into rows this slice hid — purely a DOM-size guard, not a fetch cap.
+    return rows.slice(0, 50);
   }, [bookings, query]);
+
+  // Rows the render cap is hiding right now, on an unfiltered list. Stated for
+  // the same reason as coverageNote: a list that stops at 50 with no note reads
+  // as a complete list of 50.
+  const hiddenByRenderCap =
+    query.trim() === "" ? Math.max(0, bookings.length - results.length) : 0;
 
   function toggle(orderId: string) {
     if (selectedSet.has(orderId)) onChange(value.filter((id) => id !== orderId));
@@ -174,7 +193,9 @@ export function OrderPicker({ value, onChange, disabled }: Props) {
             ) : results.length === 0 ? (
               <div className="px-3 py-2.5 text-sm text-muted-foreground">
                 {query.trim() === "" ? (
-                  "No bookings with an order ID in range."
+                  coverageNote
+                    ? "None of the bookings we could read carry an order ID."
+                    : "No bookings with an order ID in range."
                 ) : (
                   <>
                     No match.{" "}
@@ -189,39 +210,46 @@ export function OrderPicker({ value, onChange, disabled }: Props) {
                 )}
               </div>
             ) : (
-              results.map((b) => {
-                const on = selectedSet.has(b.orderId);
-                return (
-                  <button
-                    key={b.bookingId}
-                    type="button"
-                    onClick={() => toggle(b.orderId)}
-                    className={cn(
-                      "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-accent",
-                      on && "bg-primary/5"
-                    )}
-                  >
-                    <span
-                      aria-hidden="true"
+              <>
+                {results.map((b) => {
+                  const on = selectedSet.has(b.orderId);
+                  return (
+                    <button
+                      key={b.bookingId}
+                      type="button"
+                      onClick={() => toggle(b.orderId)}
                       className={cn(
-                        "flex size-4 shrink-0 items-center justify-center rounded border",
-                        on ? "border-primary bg-primary text-primary-foreground" : "border-border"
+                        "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-accent",
+                        on && "bg-primary/5"
                       )}
                     >
-                      {on && <span className="text-[10px] leading-none">✓</span>}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="font-mono font-medium">{b.orderId}</span>
-                      <span className="text-muted-foreground">
-                        {" · "}
-                        {b.patientName || "—"}
-                        {" · "}
-                        {formatDate(b.appointmentDate)}
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "flex size-4 shrink-0 items-center justify-center rounded border",
+                          on ? "border-primary bg-primary text-primary-foreground" : "border-border"
+                        )}
+                      >
+                        {on && <span className="text-[10px] leading-none">✓</span>}
                       </span>
-                    </span>
-                  </button>
-                );
-              })
+                      <span className="min-w-0 flex-1">
+                        <span className="font-mono font-medium">{b.orderId}</span>
+                        <span className="text-muted-foreground">
+                          {" · "}
+                          {b.patientName || "—"}
+                          {" · "}
+                          {formatDate(b.appointmentDate)}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+                {hiddenByRenderCap > 0 && (
+                  <div className="px-3 py-2 text-[11px] text-muted-foreground">
+                    {hiddenByRenderCap} more loaded but not listed — type to search them.
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -234,6 +262,15 @@ export function OrderPicker({ value, onChange, disabled }: Props) {
       ) : (
         <span className="text-xs text-muted-foreground">
           Search and tick the orders this incident is about.
+        </span>
+      )}
+
+      {/* A partial window is STATED, never swallowed. Without this line, "no
+          match" on a truncated list reads as "that order doesn't exist". */}
+      {coverageNote && (
+        <span className="text-xs text-amber-400">
+          {coverageNote} An order that isn{"'"}t listed can still be typed in full and
+          added with Enter.
         </span>
       )}
     </div>

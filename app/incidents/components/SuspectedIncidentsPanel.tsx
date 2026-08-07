@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { TriangleAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,16 +10,23 @@ import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
 import { localDateNDaysFrom } from "@/app/bookings/lib/dayLabels";
 import type { Booking } from "@/app/bookings/lib/types";
-import { fetchBookingsForSuspicion, incidentErrorMessage } from "../api";
+import { bookingsCoverageNote, fetchBookingsForSuspicion, incidentErrorMessage } from "../api";
 import { SUSPICION_CLASS, SUSPICION_LABEL, deriveSuspectedIncidents } from "../lib/suspected";
 import type { FilePrefill } from "./FileIncidentDialog";
 
 /** How far back we look for things that smell wrong. */
 const LOOKBACK_DAYS = 21;
-const FETCH_LIMIT = 500;
 
 export function SuspectedIncidentsPanel({ onFile }: { onFile: (prefill: FilePrefill) => void }) {
   const [bookings, setBookings] = useState<Booking[]>([]);
+  // Whether those bookings are ALL of them. This panel used to ask for limit=500
+  // and get a silently-clamped 200 back (admin.controller.ts:2032) — so on a busy
+  // 21 days it judged a fraction of the bookings and still printed "Nothing looks
+  // wrong", which is the exact shape of bug this codebase keeps getting bitten by:
+  // an absent signal rendered as an assurance. The fetch now pages to
+  // completeness; if it still comes up short, the panel says so instead of
+  // claiming the all-clear.
+  const [coverageNote, setCoverageNote] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,13 +41,16 @@ export function SuspectedIncidentsPanel({ onFile }: { onFile: (prefill: FilePref
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
+    setCoverageNote(null);
     const today = new Date();
     fetchBookingsForSuspicion({
       appointmentFrom: localDateNDaysFrom(today, -LOOKBACK_DAYS),
       appointmentTo: localDateNDaysFrom(today, 0),
-      limit: FETCH_LIMIT,
     })
-      .then((b) => setBookings(b))
+      .then((r) => {
+        setBookings(r.bookings);
+        setCoverageNote(bookingsCoverageNote(r));
+      })
       .catch((err: unknown) => setError(incidentErrorMessage(err)))
       .finally(() => setLoading(false));
   }, []);
@@ -82,9 +93,14 @@ export function SuspectedIncidentsPanel({ onFile }: { onFile: (prefill: FilePref
           </div>
         ) : visible.length === 0 ? (
           <p className="py-4 text-center text-sm text-muted-foreground">
-            {suspected.length === 0
-              ? "Nothing looks wrong in the last 21 days."
-              : "All suspected incidents ignored for this session."}
+            {suspected.length > 0
+              ? "All suspected incidents ignored for this session."
+              : coverageNote
+                // NEVER "nothing looks wrong" off a partial read. A clean panel is
+                // a claim about every booking in the window; if we didn't read
+                // them all, we haven't got a claim to make.
+                ? `Nothing looks wrong in the ${bookings.length} bookings we could read — but that isn't all of them.`
+                : `Nothing looks wrong in the last ${LOOKBACK_DAYS} days.`}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
@@ -134,6 +150,20 @@ export function SuspectedIncidentsPanel({ onFile }: { onFile: (prefill: FilePref
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Sits under BOTH the list and the empty state, because a partial read
+            matters most when the panel looks clean. */}
+        {!loading && !error && coverageNote && (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <TriangleAlert size={14} className="mt-0.5 shrink-0 text-amber-400" aria-hidden="true" />
+            <span className="text-xs text-amber-300">
+              {coverageNote} A no-show in the bookings we couldn{"'"}t read would not appear here.{" "}
+              <button type="button" onClick={load} className="font-medium underline hover:no-underline">
+                Retry
+              </button>
+            </span>
           </div>
         )}
       </CardContent>

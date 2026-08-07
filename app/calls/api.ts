@@ -32,12 +32,26 @@ import {
 // ── Queue ────────────────────────────────────────────────────────────────────
 
 /**
+ * The page size we ask for. The server's own ceiling — `?limit=200` answers 200
+ * OK on both backends (verified live 2026-08-07). Sent explicitly rather than
+ * left to the server's default so the number of rows on screen is a decision
+ * made here, where the "showing N of M" copy that depends on it also lives.
+ */
+export const QUEUE_LIMIT = 200;
+
+/**
  * GET /calls/queue — the worklist. Who to ring next, and why.
  *
- * ⚠️ NO query params. The backend rejects unknown keys with a hard 400 instead of
- * ignoring them, and a 400 here renders the queue permanently empty — which reads
- * as "nobody to call" and quietly kills the feature. Do not add a param without
- * curling it against dev first.
+ * ⚠️ UNKNOWN query params are rejected with a hard 400 rather than ignored (the
+ * DTO is `.strict()`), and a 400 here renders the queue permanently empty —
+ * which reads as "nobody to call" and quietly kills the feature. That warning is
+ * about keys the schema does not declare. `limit` IS declared, and was curled
+ * against both dev and prod before being added here:
+ *   dev  `?limit=1` → `{ queue: [1 row], total: 2 }`   `?limit=200` → 200 OK
+ *   prod `?limit=1` → `{ queue: [1 row], total: 10 }`  `?limit=200` → 200 OK
+ * Note the second number in each: `total` is counted BEFORE the slice, so it is
+ * a real count and not the page length. Still — do not add a param without
+ * curling it first.
  *
  * Rows come back grouped by visit and priority-ordered. We re-sort by `priority`
  * defensively (lower = sooner) rather than trusting array order, but we never
@@ -45,9 +59,17 @@ import {
  * is that choosing who is next is not a task.
  */
 export async function getCallQueue(): Promise<CallQueueResponse> {
-  const r = await api.get<{ queue?: CallQueueRow[]; total?: number }>("/calls/queue");
+  const r = await api.get<{ queue?: CallQueueRow[]; total?: number }>(`/calls/queue?limit=${QUEUE_LIMIT}`);
   const rows = [...(r.data?.queue ?? [])].sort(compareQueueRows);
-  return { queue: rows, total: r.data?.total ?? rows.length };
+  // `total` is NULL when the server didn't send one, never `rows.length`.
+  //
+  // The old code defaulted to the array length, which is the precise bug this
+  // page had: a page of 50 out of 200 people due a call would have rendered as
+  // "50", indistinguishable from a queue that really is 50 long. Both backends
+  // send a real total today; if one ever stops, the screen says the count is
+  // unavailable instead of quietly reporting a page size as a headcount.
+  const total = typeof r.data?.total === "number" && Number.isFinite(r.data.total) ? r.data.total : null;
+  return { queue: rows, total };
 }
 
 /**

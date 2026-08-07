@@ -73,6 +73,57 @@ export type ConversationItem =
   | (TemplateMessage & { id: string });
 
 /**
+ * One booking, as BOTH `GET /users/:id` (the aggregate) and
+ * `GET /users/:id/bookings` return it.
+ *
+ * ONE type, deliberately — the handoff (§4) promises the paginated item is
+ * byte-identical to the aggregate's, and that was checked rather than trusted:
+ * on 2026-08-07 `JSON.stringify(endpoint.items) === JSON.stringify(aggregate.bookings)`
+ * was TRUE on dev and on prod (prod user 5087e500…, 10 bookings). Two types
+ * would let the two paths drift apart without anything failing to compile.
+ */
+export interface BookingItem {
+  id: string;
+  patientName: string;
+  testType: string;
+  appointmentDate: string;
+  appointmentTime: string;
+  status: string;
+  /** PAISE. Divide by 100 to render rupees — never store the divided value. */
+  amount: number;
+  createdAt: string;
+  address: { city: string; pincode: number } | null;
+}
+
+/**
+ * One result, same story: identical from the aggregate and from
+ * `GET /users/:id/results` (verified the same way, same day).
+ *
+ * `patientName` / `relationship` / `patientId` are WHO THE TEST IS FOR. One
+ * account is a household, so this is not necessarily the account holder —
+ * they are ID-joined via `Booking.patientId → FamilyMember`, never name-matched.
+ * "self" = the account holder; null = an uploaded report not yet linked to a
+ * member. Absent means "we don't know who", never "it's the account holder".
+ */
+export interface ResultItem {
+  id: string;
+  testType: string;
+  calculatedAge: string;
+  chronologicalAge: string;
+  ageDelta: string;
+  status: string;
+  createdAt: string;
+  retestReminderOptIn: boolean;
+  retestReminderSentAt: string | null;
+  /** Full shareable report link (latest non-expired token), or null if none. */
+  reportUrl?: string | null;
+  patientName?: string | null;
+  relationship?: string | null;
+  /** FamilyMember id — lets "Ask AI" deep-link to THIS person's context. */
+  patientId?: string | null;
+}
+
+/**
  * The cursor-paged envelope. Both fields below are places the old code went
  * wrong, so they are documented at the type rather than at one call site:
  *

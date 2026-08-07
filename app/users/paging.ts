@@ -42,6 +42,32 @@ export function mergeMessages(
 }
 
 /**
+ * Append the next page of a DESCENDING collection (bookings, results), deduped
+ * by `id`, PRESERVING SERVER ORDER.
+ *
+ * Deliberately NOT `mergeMessages`. That one sorts ascending by
+ * `(createdAt, id)` because a chat transcript is read oldest-first and is
+ * append-heavy; running it over bookings would silently flip the table upside
+ * down — the newest booking would fall to the bottom, which for an operator
+ * scanning "what did this person book most recently" is a wrong answer that
+ * looks like a right one. Bookings and results come back newest-first and the
+ * server owns that order (handoff §3), so the only correct merge is "keep what
+ * we have, put the next page after it".
+ *
+ * Dedup exists because a page boundary can overlap if a row is written between
+ * two requests. `existing` wins on a collision: it is what the operator is
+ * already looking at, and re-ordering rows under a click is worse than a
+ * one-render-stale status.
+ */
+export function appendPage<T extends { id: string }>(
+  existing: readonly T[],
+  incoming: readonly T[],
+): T[] {
+  const seen = new Set(existing.map((r) => r.id));
+  return [...existing, ...incoming.filter((r) => !seen.has(r.id))];
+}
+
+/**
  * Did a poll skip past what we have loaded?
  *
  * The poll asks for the NEWEST page. If more than a page of messages arrived

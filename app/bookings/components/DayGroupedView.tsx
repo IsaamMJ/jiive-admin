@@ -1,22 +1,53 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { Loader2, ChevronDown, ChevronUp, CalendarDays, CheckCircle2, Clock4, XCircle } from "lucide-react";
+import {
+  Loader2,
+  ChevronDown,
+  ChevronUp,
+  CalendarDays,
+  CheckCircle2,
+  Clock4,
+  XCircle,
+  TriangleAlert,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import api from "@/lib/api";
+import { InfoTip } from "@/components/InfoTip";
 import { DaySection } from "./DaySection";
 import { groupByDay } from "../lib/groupByDay";
 import { localDateNDaysFrom } from "../lib/dayLabels";
-import { normalizeBookings } from "../lib/normalizeBooking";
+import { bookingsCoverageNote, fetchAllBookings } from "../lib/fetchAllBookings";
 import type { DayBucket } from "../lib/types";
 import { cn } from "@/lib/utils";
 
 const WINDOW_DAYS = 7;
-const FETCH_LIMIT = 500;
+
+/**
+ * One 7-day window, plus whether we actually read all of it.
+ *
+ * This used to be a bare DayBucket[] fetched with `limit=500`, which the server
+ * clamps to 200 in silence (admin.controller.ts:2032) — so a busy week rendered a
+ * partial day list AND fed partial numbers to the tiles above it, with nothing on
+ * screen to say so. `fetchAllBookings` pages to completeness; `incomplete` is what
+ * survives when even that comes up short.
+ */
+interface DayWindow {
+  buckets: DayBucket[];
+  /** Non-null = we could NOT read the whole window. The text says what's missing. */
+  incomplete: string | null;
+}
 
 function todayLocal(): string {
   return localDateNDaysFrom(new Date(), 0);
+}
+
+/** "7 Aug" — no year; these ranges are always within a couple of weeks of now. */
+function shortDate(iso: string): string {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+  });
 }
 
 function StatTile({
@@ -24,12 +55,15 @@ function StatTile({
   label,
   value,
   accent,
+  scope,
   subline,
 }: {
   icon: React.ComponentType<{ size?: number; className?: string }>;
   label: string;
   value: number;
   accent: string;
+  /** The date range this number covers. NOT optional — see the stats comment. */
+  scope: string;
   subline?: string;
 }) {
   return (
@@ -42,8 +76,12 @@ function StatTile({
           {label}
         </span>
         <span className="text-xl font-bold tabular-nums leading-tight">{value}</span>
+        {/* The scope rides ON the tile, not only in a caption, because the number
+            is meaningless without it — see the stats comment for the live
+            0/0/0/0-vs-19-completed contradiction that made this mandatory. */}
+        <span className="text-[10px] text-muted-foreground/80 truncate mt-0.5">{scope}</span>
         {subline && (
-          <span className="text-[10px] text-muted-foreground/80 truncate mt-0.5">{subline}</span>
+          <span className="text-[10px] text-muted-foreground/80 truncate">{subline}</span>
         )}
       </div>
     </div>
@@ -53,9 +91,9 @@ function StatTile({
 export function DayGroupedView() {
   const [today] = useState<string>(todayLocal);
   // Future windows: index 0 = today..today+6, index 1 = today+7..today+13, ...
-  const [futureWindows, setFutureWindows] = useState<DayBucket[][]>([]);
+  const [futureWindows, setFutureWindows] = useState<DayWindow[]>([]);
   // Past windows: index 0 = today-7..today-1, index 1 = today-14..today-8, ...
-  const [pastWindows, setPastWindows] = useState<DayBucket[][]>([]);
+  const [pastWindows, setPastWindows] = useState<DayWindow[]>([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingPast, setLoadingPast] = useState(false);
@@ -63,20 +101,20 @@ export function DayGroupedView() {
 
   // Direction: +1 means future (offset = futureIdx*7..+6), -1 means past (offset = -((pastIdx+1)*7)..-(pastIdx*7+1))
   const fetchWindow = useCallback(
-    async (direction: 1 | -1, index: number): Promise<DayBucket[]> => {
+    async (direction: 1 | -1, index: number): Promise<DayWindow> => {
       const base = new Date(`${today}T00:00:00`);
       const startOffset =
         direction === 1 ? index * WINDOW_DAYS : -((index + 1) * WINDOW_DAYS);
       const from = localDateNDaysFrom(base, startOffset);
       const to = localDateNDaysFrom(base, startOffset + WINDOW_DAYS - 1);
-      const params = new URLSearchParams({
-        appointmentFrom: from,
-        appointmentTo: to,
-        limit: String(FETCH_LIMIT),
-      });
-      const r = await api.get(`/bookings?${params}`);
-      const bookings = normalizeBookings(r.data.bookings);
-      return groupByDay(bookings, from, WINDOW_DAYS);
+      // No `limit` here on purpose — the pager owns it, and it is pinned at the
+      // server's real ceiling of 200 (admin.controller.ts:2032). Passing a bigger
+      // number was the bug.
+      const r = await fetchAllBookings({ appointmentFrom: from, appointmentTo: to });
+      return {
+        buckets: groupByDay(r.bookings, from, WINDOW_DAYS),
+        incomplete: bookingsCoverageNote(r),
+      };
     },
     [today]
   );
@@ -85,7 +123,7 @@ export function DayGroupedView() {
     let cancelled = false;
     setLoadingInitial(true);
     fetchWindow(1, 0)
-      .then((buckets) => { if (!cancelled) setFutureWindows([buckets]); })
+      .then((w) => { if (!cancelled) setFutureWindows([w]); })
       .catch((e) => { if (!cancelled) setError(e?.message ?? "Failed to load"); })
       .finally(() => { if (!cancelled) setLoadingInitial(false); });
     return () => { cancelled = true; };
@@ -118,14 +156,47 @@ export function DayGroupedView() {
   // Render order: oldest past window first → newest past → future windows in order.
   // pastWindows[0] is the most recent past block (today-7..today-1), so we reverse.
   const allBuckets = useMemo(() => {
-    const past = [...pastWindows].reverse().flat(); // oldest → newest
-    return [...past, ...futureWindows.flat()];
+    const past = [...pastWindows].reverse().flatMap((w) => w.buckets); // oldest → newest
+    return [...past, ...futureWindows.flatMap((w) => w.buckets)];
   }, [pastWindows, futureWindows]);
 
+  // Every window that came back short, in render order. If ANY of these is set,
+  // the day list below is missing rows and the tiles above are undercounts.
+  const coverageGaps = useMemo(() => {
+    const all = [...[...pastWindows].reverse(), ...futureWindows];
+    return all.map((w) => w.incomplete).filter((n): n is string => n !== null);
+  }, [pastWindows, futureWindows]);
+
+  // The forward window the tiles actually cover: today .. today + 7n - 1, where n
+  // grows every time the operator presses "Load next 7 days".
+  const statsRange = useMemo(() => {
+    const days = Math.max(1, futureWindows.length) * WINDOW_DAYS;
+    const to = localDateNDaysFrom(new Date(`${today}T00:00:00`), days - 1);
+    return { from: today, to, label: `${shortDate(today)} – ${shortDate(to)}` };
+  }, [today, futureWindows.length]);
+
+  // ── The four tiles ─────────────────────────────────────────────────────────
+  //
+  // These count today + the FORWARD windows only (`futureWindows`), deliberately
+  // excluding any past week the operator loads, so pressing "Load previous" can't
+  // double-count. Two consequences that MUST be stated on screen, not left for the
+  // reader to work out:
+  //
+  //  1. They are not all-time. Live prod on 2026-08-07 rendered 0 / 0 / 0 / 0 here
+  //     while GET /dashboard reported 19 completed and 4 cancelled — the same word
+  //     "Completed" against contradictory numbers, with neither side saying what it
+  //     covered. Nothing was wrong with either figure; the tiles cover a week with
+  //     no bookings in it, and /dashboard covers all time.
+  //  2. They GROW with the button. "Load next 7 days" widens the range these count,
+  //     so the same tile legitimately shows a different number depending on how
+  //     many times it was pressed. That is only honest if the range is on the tile,
+  //     which is why StatTile.scope is required rather than optional.
+  //
+  // Making them all-time instead would be the wrong fix — it would contradict the
+  // day list they sit directly above.
   const stats = useMemo(() => {
     const todayBookings = allBuckets.find((b) => b.date === today)?.bookings ?? [];
-    // Stats only count today + future (don't double-count if user loads past).
-    const futureOnly = futureWindows.flat().flatMap((b) => b.bookings);
+    const futureOnly = futureWindows.flatMap((w) => w.buckets).flatMap((b) => b.bookings);
     const upcomingActive = futureOnly.filter((b) =>
       ["pending_payment", "confirmed", "phlebo_assigned", "payment_completed", "booking_confirmed"].includes(b.status)
     );
@@ -188,34 +259,66 @@ export function DayGroupedView() {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Stats strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatTile
-          icon={CalendarDays}
-          label="Today"
-          value={stats.today}
-          accent="bg-primary/15 text-primary"
-        />
-        <StatTile
-          icon={Clock4}
-          label="Upcoming"
-          value={stats.upcoming}
-          accent="bg-amber-500/15 text-amber-400"
-        />
-        <StatTile
-          icon={CheckCircle2}
-          label="Completed"
-          value={stats.completed}
-          accent="bg-emerald-500/15 text-emerald-400"
-        />
-        <StatTile
-          icon={XCircle}
-          label="Cancelled"
-          value={stats.cancelled}
-          accent="bg-rose-500/15 text-rose-400"
-          subline={cancelSubline}
-        />
+      {/* Stats strip. The scope caption is part of the strip, not decoration —
+          these numbers are a claim about a date range and are wrong without it. */}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <span>
+            Counting{" "}
+            <span className="font-medium text-foreground">{statsRange.label}</span>
+            {" "}— today onwards only
+          </span>
+          <InfoTip label="These four count the forward days loaded on this page, starting today. Loading previous days does not add to them, and loading more future days widens the range. They are NOT all-time totals, so they will not match the Dashboard's counts — that page covers every booking ever made." />
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile
+            icon={CalendarDays}
+            label="Today"
+            value={stats.today}
+            accent="bg-primary/15 text-primary"
+            scope={shortDate(today)}
+          />
+          <StatTile
+            icon={Clock4}
+            label="Upcoming"
+            value={stats.upcoming}
+            accent="bg-amber-500/15 text-amber-400"
+            scope={statsRange.label}
+          />
+          <StatTile
+            icon={CheckCircle2}
+            label="Completed"
+            value={stats.completed}
+            accent="bg-emerald-500/15 text-emerald-400"
+            scope={statsRange.label}
+          />
+          <StatTile
+            icon={XCircle}
+            label="Cancelled"
+            value={stats.cancelled}
+            accent="bg-rose-500/15 text-rose-400"
+            scope={statsRange.label}
+            subline={cancelSubline}
+          />
+        </div>
       </div>
+
+      {/* A window that came back short makes BOTH the tiles and the day list below
+          undercounts. Say it once, at the top, where the numbers are. */}
+      {coverageGaps.length > 0 && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <TriangleAlert size={15} className="mt-0.5 shrink-0 text-amber-400" aria-hidden="true" />
+          <div className="flex flex-col gap-1 text-xs text-amber-300">
+            <span className="font-medium">
+              Some days are missing bookings — the counts above and the list below are
+              lower than the truth.
+            </span>
+            {coverageGaps.map((note, i) => (
+              <span key={i} className="text-amber-300/80">{note}</span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Load previous */}
       <div className="flex justify-center">

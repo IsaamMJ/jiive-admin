@@ -46,6 +46,22 @@ import type {
 // server returns `queued` and parses in the background (~60s for a PDF via
 // LlamaParse), so this poll is how a row reaches pending_review, not a safety net.
 const POLL_MS = 3_000;
+
+/**
+ * `GET /rag/documents` is a BARE ARRAY with a hard `take: LIST_CAP` of 500
+ * (jiive-backend rag-document.service.ts:52 and :546). No total, no paging, no
+ * signal that anything was dropped.
+ *
+ * So the old `{docs.length} total` was true right up until it mattered: at 500
+ * documents it silently starts meaning "the 500 newest", and the one number on
+ * the screen that describes the size of the knowledge base becomes wrong with
+ * nothing to indicate it. The count is now labelled "loaded" — which is always
+ * true — and the cap is called out when we are sitting on it.
+ */
+const DOCS_LIST_CAP = 500;
+
+const DOCS_CAP_EXPLAINER =
+  "The server returns at most 500 documents and doesn't say how many exist in total, so at exactly 500 we can't tell a full knowledge base from a truncated view of a bigger one. The number above is what loaded, never a total.";
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
 const MAX_BULK_FILES = 50;
 
@@ -936,7 +952,16 @@ export default function KnowledgeBasePage() {
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-medium">Documents</h2>
-            <span className="text-xs text-muted-foreground">{docs.length} total</span>
+            {/* "loaded", not "total" — see DOCS_LIST_CAP. */}
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              {docs.length} loaded
+              {docs.length >= DOCS_LIST_CAP && (
+                <>
+                  <AlertTriangle size={12} className="text-amber-400" />
+                  <InfoTip label={DOCS_CAP_EXPLAINER} />
+                </>
+              )}
+            </span>
           </div>
 
           {docsLoading ? (

@@ -34,9 +34,17 @@ import {
   type WireIncidentEnvelope,
 } from "./types";
 import { humanizeEnumValue } from "./types";
-import type { Booking } from "@/app/bookings/lib/types";
-import { normalizeBookings } from "@/app/bookings/lib/normalizeBooking";
 import { localDateNDaysFrom } from "@/app/bookings/lib/dayLabels";
+// The offset pager for GET /bookings lives with the bookings module, next to the
+// normaliser and date helper this file already borrows from it. That is the one
+// deliberate exception to "all axios for incidents lives here": /bookings is not
+// the incidents contract, and three private copies of an offset loop is how they
+// drift out of sync. Everything the INCIDENTS backend owns is still only here.
+import {
+  fetchAllBookings,
+  bookingsCoverageNote,
+  type AllBookings,
+} from "@/app/bookings/lib/fetchAllBookings";
 
 // ── Normalisers ──────────────────────────────────────────────────────────────
 //
@@ -350,18 +358,42 @@ export async function listAdmins(): Promise<Array<{ id: string; name: string; em
   return r.data.admins ?? [];
 }
 
+// Re-exported so components keep importing from `../api` — the module's one
+// front door — instead of reaching into the bookings module themselves.
+export type { AllBookings } from "@/app/bookings/lib/fetchAllBookings";
+export { bookingsCoverageNote } from "@/app/bookings/lib/fetchAllBookings";
+
 /**
  * GET /bookings — feeds the client-derived Suspected Incidents panel.
  * Existing endpoint; this is the ONE part of the incidents module that works
  * with zero new backend.
+ *
+ * Pages to completeness. This used to pass `limit: 500`, which the server clamps
+ * to 200 without saying so (admin.controller.ts:2032) — so on a busy 21-day
+ * window the panel silently examined a fraction of the bookings, and a phlebo
+ * no-show that lived in the missing rows was simply never noticed. This panel is
+ * the only place a no-show gets spotted at all, so a short read here is invisible
+ * data loss with a real customer on the other end of it.
+ *
+ * Returns the whole result, not just the rows: the caller MUST be able to tell a
+ * clean "nothing looks wrong" from "we couldn't read everything".
  */
 export async function fetchBookingsForSuspicion(params: {
   appointmentFrom: string; // YYYY-MM-DD
   appointmentTo: string; // YYYY-MM-DD
-  limit?: number;
-}): Promise<Booking[]> {
-  const r = await api.get(`/bookings?${toQuery(params)}`);
-  return normalizeBookings(r.data.bookings);
+}): Promise<AllBookings> {
+  return fetchAllBookings(params);
+}
+
+/** What the order picker gets: the rows, plus whether they are all of them. */
+export interface PickerBookings {
+  bookings: PickerBooking[];
+  /** True only when every booking in the window was read. */
+  complete: boolean;
+  /** Bookings in the window per the server (NOT the count carrying an order id). */
+  windowTotal: number | null;
+  /** Operator-facing sentence when the window came back short; null otherwise. */
+  coverageNote: string | null;
 }
 
 /**
@@ -369,23 +401,26 @@ export async function fetchBookingsForSuspicion(params: {
  *
  * There is NO server-side order search, so we fetch a wide window of bookings and
  * filter to those that carry a thyrocareOrderId client-side (that is the only
- * thing an incident can be linked to). Reuses the same /bookings + normalizeBookings
- * pattern as fetchBookingsForSuspicion, just over a wider date window and capped
- * at the widest page the list supports.
+ * thing an incident can be linked to).
+ *
+ * This was the worst instance of the limit clamp. The window is 210 days and it
+ * asked for 500; measured on dev 2026-08-07, 293 of 493 bookings never reached
+ * the dropdown and nothing on screen said so — an operator filing an incident
+ * about a real customer simply could not find their order, with no way to tell
+ * that from "that order doesn't exist". It now pages to completeness, and if it
+ * still can't, `coverageNote` says so out loud.
  */
-export async function listBookingsForPicker(): Promise<PickerBooking[]> {
+export async function listBookingsForPicker(): Promise<PickerBookings> {
   const today = new Date();
-  const r = await api.get(
-    `/bookings?${toQuery({
-      appointmentFrom: localDateNDaysFrom(today, -180),
-      appointmentTo: localDateNDaysFrom(today, 30),
-      limit: 500,
-    })}`
-  );
-  const picker: PickerBooking[] = [];
-  for (const b of normalizeBookings(r.data.bookings)) {
+  const page = await fetchAllBookings({
+    appointmentFrom: localDateNDaysFrom(today, -180),
+    appointmentTo: localDateNDaysFrom(today, 30),
+  });
+
+  const bookings: PickerBooking[] = [];
+  for (const b of page.bookings) {
     if (b.thyrocareOrderId) {
-      picker.push({
+      bookings.push({
         orderId: b.thyrocareOrderId,
         patientName: b.patientName,
         appointmentDate: b.appointmentDate,
@@ -393,7 +428,13 @@ export async function listBookingsForPicker(): Promise<PickerBooking[]> {
       });
     }
   }
-  return picker;
+
+  return {
+    bookings,
+    complete: page.complete,
+    windowTotal: page.total,
+    coverageNote: bookingsCoverageNote(page),
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
