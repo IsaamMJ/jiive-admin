@@ -376,12 +376,34 @@ export interface ReportFetchVerdict {
  * i.e. exactly one of the six banners was lying, and it was the one with a real
  * customer behind it.
  *
- * NOTE ON `diag.retryable` — deliberately never consulted. VLC5D31A came back
- * with retryable:false attached to a vendor SERVER_TIMEOUT, which is the
- * textbook retryable failure. A field that is wrong in the one case that
- * matters must not be allowed to suppress the retry button, so the verdict is
- * derived from the vendor's own answer instead. The field stays on the
- * interface because it is on the wire and may become trustworthy later.
+ * NOTE ON `diag.retryable` — 2026-08-07: NOW TRUSTED for the retry decision.
+ *
+ * It used to be ignored, and correctly so: VLC5D31A returned retryable:false on
+ * a vendor SERVER_TIMEOUT, the textbook retryable failure, and a field wrong in
+ * the one case that matters must not be allowed to suppress the retry button.
+ *
+ * The backend fixed it (2026-08-05, prod 2026-08-07, `79795ce`): it now splits
+ * on status code — 5xx = their server failed to answer → retry; 4xx = their
+ * server answered "no" → don't. Previously it split on `kind`, where
+ * `http_error` covered a 500 and a 404 identically. They asked us to drop the
+ * local derivation, and they're right: two sources of one truth drift, and if
+ * theirs regresses they would rather hear about it than have it quietly
+ * compensated for.
+ *
+ * Verified live on prod before switching over: all five outstanding orders
+ * (VL23C8DF, VL11F1CC, VLE2C673, VLDSIM001, VL0853EA) report 404
+ * DATA_NOT_FOUND with retryable:false — correct. NOT VERIFIED: the 5xx→true
+ * branch, because no live order currently carries a 5xx. That is the branch
+ * that failed last time, so `retryWorthwhile` below ORs their flag with our
+ * reading rather than replacing one with the other — we defer to them on when
+ * to retry, but we will not let a false suppress a retry that the vendor's own
+ * words justify. Absent a signal we still offer the retry: a re-read is cheap,
+ * writing off a waiting customer is not.
+ *
+ * The classification itself (whose fault, and therefore WHAT TO TELL THE
+ * OPERATOR) stays ours — a boolean cannot say "the lab's system timed out"
+ * versus "this order never existed", and that sentence is what caused the
+ * original hour of confusion.
  */
 export function classifyReportFetchFailure(
   diag: OrphanReportDiagnostic | null | undefined,
@@ -450,7 +472,13 @@ export function classifyReportFetchFailure(
   if (saysNoSuchOrder) {
     return {
       kind: "vendor_says_no_report",
-      retryWorthwhile: false,
+      // The ONE place the backend's flag can widen our answer rather than
+      // narrow it. Thyrocare's words say "no such order", so we don't offer a
+      // retry on our own account — but if the backend has decided this is
+      // retryable anyway (it now reasons from the status code, and knows things
+      // about the request that never reach this payload), defer to it. It can
+      // turn a retry ON here; nothing lets it turn one OFF.
+      retryWorthwhile: diag.retryable === true,
       mayNeverHaveExisted: true,
       because: `Thyrocare answered${status ? ` ${status}` : ""} that it holds no such order`,
     };
