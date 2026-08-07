@@ -37,6 +37,32 @@ import { cn } from "@/lib/utils";
  */
 const CONVO_POLL_MS = 10000;
 
+/**
+ * GET /users/:id hard-codes `take: 50` on the conversation query
+ * (jiive-backend admin.controller.ts:1656-1659). There is no parameter that
+ * raises it — verified live: ?limit=, ?messageLimit= and ?conversationLimit=
+ * are all silently ignored, returning 200 and exactly 50 rows.
+ *
+ * So when 50 arrive we are almost certainly looking at a TRUNCATED view, and
+ * the rows we have are the NEWEST 50 (the query orders createdAt desc) — the
+ * oldest messages are the missing ones, which is the opposite of what a chat
+ * transcript reading top-to-bottom implies.
+ *
+ * We deliberately do NOT print a total. The detail payload carries no count
+ * (verified: its keys are id, whatsappPhone, name, dob, gender, email,
+ * profileComplete, status, createdAt, lastWhatsappActivity, creditBalance).
+ * The users LIST has `_count.lumiConversations`, but reaching it from here
+ * would mean fetching up to 200 users to read one number, and that list is
+ * itself capped. Inventing a total, or implying one by showing a bare "(50)",
+ * is the exact defect this label exists to fix — an absent signal is never a
+ * positive assurance.
+ *
+ * Remove all of this once the backend ships the paginated endpoint and the
+ * { items, total, hasMore, nextCursor } envelope — see
+ * docs/handoff-backend-user-detail-pagination.md.
+ */
+const CONVO_SERVER_CAP = 50;
+
 const LIVE_EXPLAINER =
   "This chat refreshes itself every 10 seconds while you're on this tab, so new WhatsApp messages appear without you reloading. It pauses when you switch to another browser tab and catches up the moment you come back.";
 
@@ -1098,7 +1124,11 @@ export default function UserDetailPage() {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col gap-4">
         <TabsList className="w-fit">
           <TabsTrigger value="profile">Profile</TabsTrigger>
-          <TabsTrigger value="conversations">Conversations ({conversations.length})</TabsTrigger>
+          {/* "50+" not "50": at the cap the number is a page size, not a count. */}
+          <TabsTrigger value="conversations">
+            Conversations ({conversations.length}
+            {conversations.length >= CONVO_SERVER_CAP ? "+" : ""})
+          </TabsTrigger>
           <TabsTrigger value="bookings">Bookings ({bookings.length})</TabsTrigger>
           <TabsTrigger value="results">Results ({results.length})</TabsTrigger>
           {/* Falls back to the legacy array's length until the read-back lands —
@@ -1163,6 +1193,20 @@ export default function UserDetailPage() {
               {refreshing ? "Refreshing…" : "Refresh"}
             </Button>
           </div>
+          {/* Sits ABOVE the transcript and scrolls with nothing — the missing
+              messages are the OLDEST, so this belongs where the reader's eye
+              starts, not at the bottom where they'd never reach it. */}
+          {conversations.length >= CONVO_SERVER_CAP && (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              <p>
+                Showing the most recent {CONVO_SERVER_CAP} messages. This is the server&apos;s limit,
+                not the whole conversation — anything older is not loaded, and there is currently no
+                way to fetch it from here.
+                <InfoTip label="The backend caps this list at 50 and sends no total, so we can't tell you how many more exist. A paginated endpoint has been requested — see docs/handoff-backend-user-detail-pagination.md." />
+              </p>
+            </div>
+          )}
           <div ref={convoScrollRef} className="flex flex-col gap-2 max-h-[600px] overflow-y-auto pr-1">
             {conversations.length === 0 ? (
               <p className="text-muted-foreground text-sm">No conversations.</p>
