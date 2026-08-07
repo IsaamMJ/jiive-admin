@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, Fragment } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AdminLayout } from "@/components/AdminLayout";
@@ -22,12 +22,20 @@ import {
 } from "@/components/ui/table";
 import {
   Sparkles, ExternalLink, Reply, RefreshCw, FileText, Image as ImageIcon, Download, Loader2,
-  AlertTriangle, Stethoscope, UserRound, UsersRound, Eye, EyeOff,
+  AlertTriangle, Stethoscope, UserRound, UsersRound, Eye, EyeOff, ArrowUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { InfoTip } from "@/components/InfoTip";
 import { cn } from "@/lib/utils";
+import {
+  CONVO_PAGE_SIZE,
+  EndpointNotDeployedError,
+  conversationErrorMessage,
+  fetchConversationsPage,
+} from "../api";
+import { gapBeforeId, mergeMessages } from "../paging";
+import type { AggregateMessage, ConvButton, ConvMedia, ConversationItem } from "../types";
 
 /**
  * The chat keeps arriving after the page loaded. Poll while the operator is
@@ -38,33 +46,43 @@ import { cn } from "@/lib/utils";
 const CONVO_POLL_MS = 10000;
 
 /**
- * GET /users/:id hard-codes `take: 50` on the conversation query
+ * THE FALLBACK PATH ONLY. Still true, still load-bearing — read on.
+ *
+ * `GET /users/:id` hard-codes `take: 50` on the conversation query
  * (jiive-backend admin.controller.ts:1656-1659). There is no parameter that
  * raises it — verified live: ?limit=, ?messageLimit= and ?conversationLimit=
  * are all silently ignored, returning 200 and exactly 50 rows.
  *
- * So when 50 arrive we are almost certainly looking at a TRUNCATED view, and
- * the rows we have are the NEWEST 50 (the query orders createdAt desc) — the
- * oldest messages are the missing ones, which is the opposite of what a chat
- * transcript reading top-to-bottom implies.
+ * So when 50 arrive from the AGGREGATE we are almost certainly looking at a
+ * TRUNCATED view, and the rows we have are the NEWEST 50 (the query orders
+ * createdAt desc) — the oldest messages are the missing ones, which is the
+ * opposite of what a chat transcript reading top-to-bottom implies. The
+ * aggregate carries no count either (its keys are id, whatsappPhone, name, dob,
+ * gender, email, profileComplete, status, createdAt, lastWhatsappActivity,
+ * creditBalance), so on that path we still cannot state a total and still show
+ * "50+" rather than implying one with a bare "(50)".
  *
- * We deliberately do NOT print a total. The detail payload carries no count
- * (verified: its keys are id, whatsappPhone, name, dob, gender, email,
- * profileComplete, status, createdAt, lastWhatsappActivity, creditBalance).
- * The users LIST has `_count.lumiConversations`, but reaching it from here
- * would mean fetching up to 200 users to read one number, and that list is
- * itself capped. Inventing a total, or implying one by showing a bare "(50)",
- * is the exact defect this label exists to fix — an absent signal is never a
- * positive assurance.
+ * What CHANGED (2026-08-07): `GET /users/:id/conversations` now exists and
+ * returns { items, total, hasMore, nextCursor } with a real count and backwards
+ * paging. When it answers, none of the above applies and none of it is shown —
+ * the tab reads the real total and the operator can walk back through the whole
+ * transcript. See docs/handoff-backend-user-detail-pagination-RESPONSE.md.
  *
- * Remove all of this once the backend ships the paginated endpoint and the
- * { items, total, hasMore, nextCursor } envelope — see
- * docs/handoff-backend-user-detail-pagination.md.
+ * It is NOT yet on prod: verified live, prod 404s the route while dev serves it.
+ * So this constant, and the amber banner and the "+" it drives, stay exactly as
+ * they were for the 404 fallback — where every word of them is still accurate.
+ * Delete them once prod has the endpoint and the fallback is dead code.
  */
 const CONVO_SERVER_CAP = 50;
 
 const LIVE_EXPLAINER =
-  "This chat refreshes itself every 10 seconds while you're on this tab, so new WhatsApp messages appear without you reloading. It pauses when you switch to another browser tab and catches up the moment you come back.";
+  "This chat refreshes itself every 10 seconds while you're on this tab, so new WhatsApp messages appear without you reloading. It pauses when you switch to another browser tab and catches up the moment you come back. Older messages you've loaded stay loaded — a refresh never throws them away.";
+
+const LOAD_OLDER_EXPLAINER =
+  "Fetches the 50 messages just before the oldest one shown and adds them to the top. Your place in the conversation is kept, so you carry on reading where you were. Repeat it to walk the whole history back to the first message.";
+
+const CONVO_TOTAL_EXPLAINER =
+  "The real number of messages in this conversation, counted by the server — not the number currently loaded on screen.";
 
 interface CreditTx {
   id: string;
@@ -86,23 +104,6 @@ const TX_TYPE_COLOR: Record<string, string> = {
   usage: "bg-orange-500/20 text-orange-400 border-orange-500/30",
   expiry: "bg-red-500/20 text-red-400 border-red-500/30",
 };
-
-/** An option the bot offered on an interactive message. `title` is what the customer saw. */
-interface ConvButton {
-  id: string;
-  title: string;
-}
-
-/**
- * A file the customer sent (a lab report PDF, a photo). WhatsApp keeps media ~30
- * days, so `mediaId` is a live handle, not permanent storage — older uploads 404.
- */
-interface ConvMedia {
-  mediaId: string;
-  filename?: string | null;
-  mimeType?: string | null;
-  caption?: string | null;
-}
 
 /**
  * An attachment bubble for a media message. Shows the file up front (icon +
@@ -219,18 +220,12 @@ interface UserDetail {
     lastWhatsappActivity: string;
     creditBalance: { balance: number; updatedAt: string } | null;
   };
-  conversations: (
-    // `displayLabel` is the human label the customer actually saw/tapped for an
-    // interactive button ("🧬 Know my Bio-Age"); `content` is the raw payload id
-    // ("disc_know_bioage"). The backend resolves it; we prefer it for display.
-    //
-    // `buttons` are the options the BOT offered on an outbound interactive message
-    // (id + the title the customer saw). Rendered as WhatsApp-style option rows
-    // under the message. Present only once the backend stores the button set —
-    // see docs/handoff-backend-conversation-buttons.md. Absent = nothing extra.
-    | { type?: "chat"; direction: string; content: string; displayLabel?: string | null; messageType?: string; media?: ConvMedia | null; buttons?: ConvButton[] | null; createdAt: string }
-    | { type: "template"; direction: "outbound"; content: string; displayLabel?: string | null; templateName: string; status: string; media?: ConvMedia | null; buttons?: ConvButton[] | null; createdAt: string }
-  )[];
+  /**
+   * The legacy, capped, id-less transcript. Read ONLY when
+   * `GET /users/:id/conversations` 404s — see the Conversations tab below.
+   * Shape (and the reason `displayLabel` beats `content`) lives in ../types.
+   */
+  conversations: AggregateMessage[];
   bookings: {
     id: string; patientName: string; testType: string; appointmentDate: string;
     appointmentTime: string; status: string; amount: number; address: { city: string; pincode: number };
@@ -899,6 +894,91 @@ function MessageBody({ content }: { content: string }) {
   );
 }
 
+/**
+ * One chat bubble. Takes the AGGREGATE shape, which the paginated item is a
+ * superset of (it only adds `id`), so both code paths render through exactly
+ * this component — a transcript that looked different depending on which
+ * endpoint fed it would be its own bug.
+ */
+function MessageBubble({ msg }: { msg: AggregateMessage }) {
+  if (msg.type === "template") {
+    const failed = msg.status?.toLowerCase() === "failed";
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-primary text-primary-foreground px-4 py-2 text-sm">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Badge
+              variant="outline"
+              className={`px-1.5 py-0 text-[10px] ${failed ? "border-red-500/40 bg-red-500/20 text-red-300" : "border-primary-foreground/30 bg-primary-foreground/15 text-primary-foreground/90"}`}
+            >
+              Template
+            </Badge>
+            <span className="text-[10px] text-primary-foreground/70">{msg.templateName}</span>
+            {failed && <span className="text-[10px] text-red-300">· failed</span>}
+          </div>
+          {msg.media ? (
+            <MessageMedia media={msg.media} tone="light" />
+          ) : (
+            <MessageBody content={msg.displayLabel ?? msg.content} />
+          )}
+          <p className="text-xs mt-1 text-primary-foreground/60">
+            {new Date(msg.createdAt).toLocaleString()}
+          </p>
+          {msg.buttons && <MessageButtons buttons={msg.buttons} />}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
+      <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${msg.direction === "outbound" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
+        {msg.media ? (
+          <MessageMedia media={msg.media} tone={msg.direction === "outbound" ? "light" : "dark"} />
+        ) : (
+          <MessageBody content={msg.displayLabel ?? msg.content} />
+        )}
+        <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
+          {new Date(msg.createdAt).toLocaleString()}
+        </p>
+        {msg.buttons && <MessageButtons buttons={msg.buttons} />}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the Conversations tab is currently reading, and how it got there.
+ *
+ * `mode` is decided ONCE per user id, by whether the paginated endpoint answers
+ * at all — never per render, and never per poll:
+ *   paginated — the endpoint is live. `items`/`total` are the only truth; the
+ *               aggregate's `conversations` array is not read at all.
+ *   fallback  — the endpoint 404s on this backend (prod, today). The legacy
+ *               capped array is rendered, banner and "50+" label intact.
+ * A 400/500 produces neither: it is an ERROR, held separately, and the tab says
+ * so instead of quietly showing the legacy array as if nothing were wrong.
+ *
+ * `forUserId` stamps the payload: the App Router reuses this component across
+ * /users/a → /users/b, and an unstamped transcript would show one customer's
+ * WhatsApp messages under another customer's name until the refetch landed.
+ */
+interface ConvoView {
+  forUserId: string;
+  mode: "paginated" | "fallback";
+  /** Ascending, oldest first — the order the endpoint returns and chat reads. */
+  items: ConversationItem[];
+  /** The server's real count. Never a page size. */
+  total: number;
+  /** Observed server-side. Whether OLDER pages exist. Never inferred here. */
+  hasMore: boolean;
+  /** Opaque; points at the oldest row loaded. Passed back verbatim. */
+  cursor: string | null;
+  /** Has the operator pulled at least one older page? Governs cursor handling on poll. */
+  loadedOlder: boolean;
+  /** First message after a hole a poll jumped over. See paging.gapBeforeId. */
+  gapBeforeId: string | null;
+}
+
 export default function UserDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [data, setData] = useState<UserDetail | null>(null);
@@ -908,9 +988,31 @@ export default function UserDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
   const convoScrollRef = useRef<HTMLDivElement | null>(null);
-  /** Was the operator pinned to the bottom before this refresh? Decided pre-render. */
+  /**
+   * Is the operator pinned to the bottom? Kept current by the transcript's own
+   * onScroll rather than sampled before each fetch — prepending an older page
+   * also moves the scrollbar, and a value sampled at fetch time would be stale
+   * by the time it decided whether to follow a new message.
+   */
   const wasAtBottomRef = useRef(true);
-  const convoCountRef = useRef(0);
+  /** The newest message currently rendered. Growth at the TOP must not scroll. */
+  const newestRenderedRef = useRef<string | null>(null);
+
+  // ── Conversations: the paginated transcript ────────────────────────────────
+  const [convo, setConvo] = useState<ConvoView | null>(null);
+  /** A real failure (400/500/garbled envelope). NEVER satisfied by the aggregate. */
+  const [convoError, setConvoError] = useState<{ forUserId: string; message: string } | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  /** A failed "load older" — the loaded transcript stays on screen beside it. */
+  const [olderError, setOlderError] = useState<string | null>(null);
+  /** Which user id we've already probed — stops the effect looping. */
+  const convoProbedForRef = useRef<string | null>(null);
+  /**
+   * Scroll metrics captured in the same tick the prepend is committed, applied
+   * before the browser paints. Without this the viewport jumps to the top the
+   * moment older messages arrive, which makes the feature unusable.
+   */
+  const pendingScrollRestoreRef = useRef<{ height: number; top: number } | null>(null);
 
   const [txs, setTxs] = useState<CreditTx[]>([]);
   const [txTotal, setTxTotal] = useState(0);
@@ -944,15 +1046,12 @@ export default function UserDetailPage() {
   }, [id]);
 
   /**
-   * A silent re-fetch: no skeleton, no toast, and a failure leaves the messages
-   * already on screen alone. A dropped poll is not worth blanking the chat — the
-   * next tick fixes it, and the "updated HH:MM:SS" stamp shows if it went stale.
+   * A silent re-fetch of the AGGREGATE — the fallback path's poll, unchanged.
+   * No skeleton, no toast, and a failure leaves the messages already on screen
+   * alone. A dropped poll is not worth blanking the chat; the next tick fixes
+   * it, and the "updated HH:MM:SS" stamp shows if it went stale.
    */
   const refreshUser = useCallback(async () => {
-    const el = convoScrollRef.current;
-    wasAtBottomRef.current = el
-      ? el.scrollHeight - el.scrollTop - el.clientHeight < 80
-      : true;
     setRefreshing(true);
     try {
       const r = await api.get(`/users/${id}`);
@@ -965,18 +1064,151 @@ export default function UserDetailPage() {
     }
   }, [id]);
 
-  // Poll only while the Conversations tab is open AND the browser tab is visible.
+  /**
+   * Probe the paginated endpoint once per user, and take the newest page.
+   *
+   * This is where the fallback decision is made, and it is made exactly once:
+   * a 404 means the route is not on this backend at all, so the tab reverts to
+   * the legacy capped array for the rest of this user's visit. Anything else —
+   * 400, 500, a changed envelope — is a genuine failure and is recorded as one.
+   */
+  const probeConversations = useCallback(async () => {
+    setConvoError(null);
+    setOlderError(null);
+    try {
+      const page = await fetchConversationsPage(id, { limit: CONVO_PAGE_SIZE });
+      setConvo({
+        forUserId: id,
+        mode: "paginated",
+        items: page.items,
+        total: page.total,
+        hasMore: page.hasMore,
+        cursor: page.nextCursor,
+        loadedOlder: false,
+        gapBeforeId: null,
+      });
+    } catch (e) {
+      if (e instanceof EndpointNotDeployedError) {
+        setConvo({
+          forUserId: id, mode: "fallback", items: [], total: 0,
+          hasMore: false, cursor: null, loadedOlder: false, gapBeforeId: null,
+        });
+        return;
+      }
+      setConvoError({ forUserId: id, message: conversationErrorMessage(e) });
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (convoProbedForRef.current === id) return;
+    convoProbedForRef.current = id;
+    setConvo(null);
+    newestRenderedRef.current = null;
+    void probeConversations();
+  }, [id, probeConversations]);
+
+  /**
+   * The poll, on the paginated path: re-read the NEWEST page and fold it into
+   * what is already loaded.
+   *
+   * Two things this must not do. It must not discard older pages the operator
+   * has pulled — hence a union by id rather than a replace. And it must not
+   * adopt the fresh page's `nextCursor` once older pages are loaded: that
+   * cursor points at the newest page's oldest row, so taking it would rewind
+   * the paging position and make "load older" re-fetch what is already on
+   * screen, forever.
+   */
+  const refreshConversations = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const page = await fetchConversationsPage(id, { limit: CONVO_PAGE_SIZE });
+      setConvo((prev) => {
+        if (!prev || prev.forUserId !== id || prev.mode !== "paginated") return prev;
+        return {
+          ...prev,
+          items: mergeMessages(prev.items, page.items),
+          total: page.total,
+          hasMore: prev.loadedOlder ? prev.hasMore : page.hasMore,
+          cursor: prev.loadedOlder ? prev.cursor : page.nextCursor,
+          gapBeforeId: prev.gapBeforeId ?? gapBeforeId(prev.items, page.items),
+        };
+      });
+      setRefreshedAt(new Date());
+    } catch {
+      // Keep what's on screen; the next tick will try again.
+    } finally {
+      setRefreshing(false);
+    }
+  }, [id]);
+
+  /**
+   * Walk one page BACKWARDS in time and prepend it.
+   *
+   * `hasMore` comes straight off the server (it fetches limit+1 and reports
+   * what it saw). It is deliberately not re-derived from `total > items.length`
+   * — that comparison is true on the last page of a long list and renders a
+   * button that fetches nothing.
+   */
+  const loadOlder = useCallback(async (view: ConvoView) => {
+    if (loadingOlder || !view.hasMore || !view.cursor) return;
+    setLoadingOlder(true);
+    setOlderError(null);
+    try {
+      const page = await fetchConversationsPage(id, { limit: CONVO_PAGE_SIZE, before: view.cursor });
+      const el = convoScrollRef.current;
+      if (el) pendingScrollRestoreRef.current = { height: el.scrollHeight, top: el.scrollTop };
+      setConvo((prev) => {
+        if (!prev || prev.forUserId !== id || prev.mode !== "paginated") return prev;
+        return {
+          ...prev,
+          items: mergeMessages(page.items, prev.items),
+          total: page.total,
+          hasMore: page.hasMore,
+          cursor: page.nextCursor,
+          loadedOlder: true,
+        };
+      });
+    } catch (e) {
+      pendingScrollRestoreRef.current = null;
+      setOlderError(conversationErrorMessage(e));
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [id, loadingOlder]);
+
+  /** Re-run the probe after a real failure. Not a poll — the operator asked. */
+  const retryConversations = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await probeConversations();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [probeConversations]);
+
+  const convoView = convo && convo.forUserId === id ? convo : null;
+  const convoErr = convoError && convoError.forUserId === id ? convoError.message : null;
+  /** Nothing has arrived and nothing has failed yet — derived, not flagged. */
+  const convoProbing = !convoView && !convoErr;
+  const paginated = convoView?.mode === "paginated";
+
+  // Poll only while the Conversations tab is open AND the browser tab is
+  // visible. On the paginated path that's the newest page; on the fallback path
+  // it's the whole aggregate, exactly as before. An unresolved probe or a hard
+  // error polls nothing — a "Live" dot over a broken tab would be a lie.
   useEffect(() => {
     if (activeTab !== "conversations") return;
+    if (convoProbing || convoErr) return;
+    const refresh = paginated ? refreshConversations : refreshUser;
 
     const tick = () => {
-      if (document.visibilityState === "visible") refreshUser();
+      if (document.visibilityState === "visible") refresh();
     };
     const timer = setInterval(tick, CONVO_POLL_MS);
 
     // Coming back to the tab shouldn't mean waiting out the rest of the interval.
     const onVisible = () => {
-      if (document.visibilityState === "visible") refreshUser();
+      if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", onVisible);
 
@@ -984,20 +1216,46 @@ export default function UserDetailPage() {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [activeTab, refreshUser]);
+  }, [activeTab, convoProbing, convoErr, paginated, refreshConversations, refreshUser]);
 
-  const conversationCount = data?.conversations.length ?? 0;
+  /**
+   * Restore the scroll position after a prepend, BEFORE the browser paints.
+   *
+   * The content above the viewport just got taller by exactly
+   * (newHeight - oldHeight), so pushing scrollTop down by that much leaves the
+   * message the operator was reading under the same pixel. useLayoutEffect, not
+   * useEffect: on useEffect the jump to the top is painted first and then
+   * corrected, which reads as a flicker.
+   */
+  useLayoutEffect(() => {
+    const pending = pendingScrollRestoreRef.current;
+    if (!pending) return;
+    pendingScrollRestoreRef.current = null;
+    const el = convoScrollRef.current;
+    if (!el) return;
+    el.scrollTop = pending.top + (el.scrollHeight - pending.height);
+  }, [convoView?.items]);
 
-  // New messages land at the bottom. Follow them only if the operator was already
-  // there — yanking someone who scrolled up to read history is worse than stale.
+  /**
+   * Follow NEW messages to the bottom — and only new ones.
+   *
+   * Keyed on the id of the newest message, not on the message COUNT: prepending
+   * an older page also grows the count, and a count-based check would yank the
+   * operator to the bottom of the chat every time they asked to read history.
+   */
+  const newestKey = paginated
+    ? convoView.items[convoView.items.length - 1]?.id ?? "empty"
+    : `aggregate:${data?.conversations.length ?? 0}`;
+
   useEffect(() => {
     if (activeTab !== "conversations") return;
     const el = convoScrollRef.current;
     if (!el) return;
-    const grew = conversationCount > convoCountRef.current;
-    convoCountRef.current = conversationCount;
-    if (grew && wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
-  }, [activeTab, conversationCount]);
+    if (newestRenderedRef.current === newestKey) return;
+    const firstPaint = newestRenderedRef.current === null;
+    newestRenderedRef.current = newestKey;
+    if (firstPaint || wasAtBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [activeTab, newestKey]);
 
   /**
    * Read memory back from the subject-aware endpoint.
@@ -1124,10 +1382,23 @@ export default function UserDetailPage() {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col gap-4">
         <TabsList className="w-fit">
           <TabsTrigger value="profile">Profile</TabsTrigger>
-          {/* "50+" not "50": at the cap the number is a page size, not a count. */}
+          {/* Three different numbers, because three different things are known:
+              paginated — the server's real total, stated plainly.
+              fallback  — "50+" not "50": at the cap the number is a page size,
+                          not a count, and no count exists to print.
+              error     — no number at all. We do not know, and the count from
+                          the aggregate would read as if we did. */}
           <TabsTrigger value="conversations">
-            Conversations ({conversations.length}
-            {conversations.length >= CONVO_SERVER_CAP ? "+" : ""})
+            {paginated ? (
+              `Conversations (${convoView.total})`
+            ) : convoErr ? (
+              <span className="inline-flex items-center gap-1">
+                Conversations
+                <AlertTriangle size={12} className="text-amber-400" />
+              </span>
+            ) : (
+              `Conversations (${conversations.length}${conversations.length >= CONVO_SERVER_CAP ? "+" : ""})`
+            )}
           </TabsTrigger>
           <TabsTrigger value="bookings">Bookings ({bookings.length})</TabsTrigger>
           <TabsTrigger value="results">Results ({results.length})</TabsTrigger>
@@ -1170,92 +1441,164 @@ export default function UserDetailPage() {
 
         {/* Conversations */}
         <TabsContent value="conversations">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-              </span>
-              <span>
-                Live
-                {refreshedAt && ` · updated ${refreshedAt.toLocaleTimeString()}`}
-              </span>
-              <InfoTip label={LIVE_EXPLAINER} />
+          {convoProbing ? (
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-8" />
+              <Skeleton className="h-64" />
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1.5 text-xs"
-              onClick={refreshUser}
-              disabled={refreshing}
-            >
-              <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
-              {refreshing ? "Refreshing…" : "Refresh"}
-            </Button>
-          </div>
-          {/* Sits ABOVE the transcript and scrolls with nothing — the missing
-              messages are the OLDEST, so this belongs where the reader's eye
-              starts, not at the bottom where they'd never reach it. */}
-          {conversations.length >= CONVO_SERVER_CAP && (
-            <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-              <p>
-                Showing the most recent {CONVO_SERVER_CAP} messages. This is the server&apos;s limit,
-                not the whole conversation — anything older is not loaded, and there is currently no
-                way to fetch it from here.
-                <InfoTip label="The backend caps this list at 50 and sends no total, so we can't tell you how many more exist. A paginated endpoint has been requested — see docs/handoff-backend-user-detail-pagination.md." />
-              </p>
-            </div>
-          )}
-          <div ref={convoScrollRef} className="flex flex-col gap-2 max-h-[600px] overflow-y-auto pr-1">
-            {conversations.length === 0 ? (
-              <p className="text-muted-foreground text-sm">No conversations.</p>
-            ) : conversations.map((msg, i) => {
-              if (msg.type === "template") {
-                const failed = msg.status?.toLowerCase() === "failed";
-                return (
-                  <div key={i} className="flex justify-end">
-                    <div className="max-w-[75%] rounded-2xl rounded-br-sm bg-primary text-primary-foreground px-4 py-2 text-sm">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <Badge
-                          variant="outline"
-                          className={`px-1.5 py-0 text-[10px] ${failed ? "border-red-500/40 bg-red-500/20 text-red-300" : "border-primary-foreground/30 bg-primary-foreground/15 text-primary-foreground/90"}`}
-                        >
-                          Template
-                        </Badge>
-                        <span className="text-[10px] text-primary-foreground/70">{msg.templateName}</span>
-                        {failed && <span className="text-[10px] text-red-300">· failed</span>}
-                      </div>
-                      {msg.media ? (
-                        <MessageMedia media={msg.media} tone="light" />
-                      ) : (
-                        <MessageBody content={msg.displayLabel ?? msg.content} />
-                      )}
-                      <p className="text-xs mt-1 text-primary-foreground/60">
-                        {new Date(msg.createdAt).toLocaleString()}
-                      </p>
-                      {msg.buttons && <MessageButtons buttons={msg.buttons} />}
-                    </div>
-                  </div>
-                );
-              }
-              return (
-                <div key={i} className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${msg.direction === "outbound" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
-                    {msg.media ? (
-                      <MessageMedia media={msg.media} tone={msg.direction === "outbound" ? "light" : "dark"} />
-                    ) : (
-                      <MessageBody content={msg.displayLabel ?? msg.content} />
-                    )}
-                    <p className={`text-xs mt-1 ${msg.direction === "outbound" ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
-                      {new Date(msg.createdAt).toLocaleString()}
-                    </p>
-                    {msg.buttons && <MessageButtons buttons={msg.buttons} />}
-                  </div>
+          ) : convoErr ? (
+            /* A REAL failure — 400, 500, a changed envelope. Deliberately NOT
+               satisfied by quietly rendering the aggregate's 50 messages: a
+               transcript that looks fine while the server is broken is the
+               defect this tab was rebuilt to remove. */
+            <Card>
+              <CardContent className="flex flex-col items-start gap-2 py-6">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <AlertTriangle size={15} className="shrink-0 text-amber-400" />
+                  Couldn&apos;t load this conversation
+                </p>
+                <p className="text-xs break-words text-muted-foreground">{convoErr}</p>
+                <p className="text-[11px] text-muted-foreground/70">
+                  This is a failure to read, not an empty chat. Nothing is being shown because we
+                  cannot say what the messages are.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-1 h-7 gap-1.5 text-xs"
+                  onClick={retryConversations}
+                  disabled={refreshing}
+                >
+                  <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+                  {refreshing ? "Retrying…" : "Try again"}
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    <span className="relative flex h-2 w-2">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                    </span>
+                    <span>
+                      Live
+                      {refreshedAt && ` · updated ${refreshedAt.toLocaleTimeString()}`}
+                    </span>
+                    <InfoTip label={LIVE_EXPLAINER} />
+                  </span>
+                  {paginated && (
+                    <span className="flex items-center gap-1">
+                      · {convoView.items.length} of {convoView.total} loaded
+                      <InfoTip label={CONVO_TOTAL_EXPLAINER} />
+                    </span>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  onClick={paginated ? refreshConversations : refreshUser}
+                  disabled={refreshing}
+                >
+                  <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+                  {refreshing ? "Refreshing…" : "Refresh"}
+                </Button>
+              </div>
+
+              {/* FALLBACK ONLY. Every word of it is still true where it shows:
+                  the aggregate caps at 50, states no total, and offers no way to
+                  reach the older messages. It disappears the moment the
+                  paginated endpoint answers, because then none of it holds. */}
+              {!paginated && conversations.length >= CONVO_SERVER_CAP && (
+                <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                  <p>
+                    Showing the most recent {CONVO_SERVER_CAP} messages. This is the server&apos;s limit,
+                    not the whole conversation — anything older is not loaded, and there is currently no
+                    way to fetch it from here.
+                    <InfoTip label="This backend does not have the paginated conversations endpoint yet, so we're reading the old capped list: 50 messages, no total, no way to page back. Where the endpoint is deployed this tab shows the real count and loads older messages on demand." />
+                  </p>
+                </div>
+              )}
+
+              <div
+                ref={convoScrollRef}
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                }}
+                className="flex flex-col gap-2 max-h-[600px] overflow-y-auto pr-1"
+              >
+                {paginated ? (
+                  <>
+                    {/* At the TOP of the scroll area, because the messages it
+                        fetches are the OLDEST — this is where a reader walking
+                        backwards through a chat actually ends up. */}
+                    {convoView.hasMore ? (
+                      <div className="flex flex-col items-center gap-1 py-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 gap-1.5 text-xs"
+                          onClick={() => loadOlder(convoView)}
+                          disabled={loadingOlder}
+                        >
+                          {loadingOlder ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <ArrowUp size={12} />
+                          )}
+                          {loadingOlder ? "Loading older messages…" : "Load older messages"}
+                          <InfoTip label={LOAD_OLDER_EXPLAINER} />
+                        </Button>
+                        {olderError && (
+                          <p className="max-w-full break-words px-2 text-center text-[11px] text-red-400">
+                            Couldn&apos;t load older messages: {olderError}
+                          </p>
+                        )}
+                      </div>
+                    ) : convoView.items.length > 0 ? (
+                      <p className="py-1 text-center text-[11px] text-muted-foreground/70">
+                        Beginning of the conversation
+                      </p>
+                    ) : null}
+
+                    {convoView.items.length === 0 ? (
+                      <p className="text-muted-foreground text-sm">No conversations.</p>
+                    ) : (
+                      convoView.items.map((msg) => (
+                        <Fragment key={msg.id}>
+                          {/* A poll that jumped a whole page says so, rather than
+                              butting two blocks together as one conversation. */}
+                          {convoView.gapBeforeId === msg.id && (
+                            <div className="flex items-center gap-2 py-1">
+                              <span className="h-px flex-1 bg-amber-500/40" />
+                              <span className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+                                Messages in between are not loaded
+                                <InfoTip label="More than a page of messages arrived between two refreshes, so there is a gap here. Reload the page to fetch a continuous transcript." />
+                              </span>
+                              <span className="h-px flex-1 bg-amber-500/40" />
+                            </div>
+                          )}
+                          <MessageBubble msg={msg} />
+                        </Fragment>
+                      ))
+                    )}
+                  </>
+                ) : conversations.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">No conversations.</p>
+                ) : (
+                  /* Fallback path only. The aggregate carries no row id, so the
+                     index is all there is — safe here precisely because this
+                     path never prepends. */
+                  conversations.map((msg, i) => <MessageBubble key={i} msg={msg} />)
+                )}
+              </div>
+            </>
+          )}
         </TabsContent>
 
         {/* Bookings */}
