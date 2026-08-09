@@ -7,6 +7,9 @@ import { toast } from "sonner";
 import { Loader2, Trash2, Eye, CheckCircle, Upload, AlertTriangle, Files } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { ConvertPanel } from "./ConvertPanel";
+import { DiscoveredPanel } from "./DiscoveredPanel";
+import { StatusBadge } from "./StatusBadge";
+import { DISCOVERED_PARTITION_NOTE, fetchDiscovered, isSourceDateUnknown } from "./discovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +30,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import api from "@/lib/api";
 import { InfoTip } from "@/components/InfoTip";
 import type {
@@ -40,6 +44,7 @@ import type {
   VersionInfo,
   ApproveResponse,
   PasteTextResponse,
+  DiscoveredDocument,
 } from "./types";
 
 // Poll every 3s while any doc is queued/processing. Uploads are ASYNC — the
@@ -93,26 +98,51 @@ function isBatchInProgress(status: BatchDocStatus): boolean {
   return status === "uploaded" || status === "parsing";
 }
 
-function StatusBadge({ status, failureReason }: { status: DocStatus; failureReason?: string }) {
-  const variants: Record<DocStatus, { label: string; className: string }> = {
-    ready: { label: "Ready", className: "border-green-200 bg-green-50 text-green-700" },
-    pending_review: { label: "Pending review", className: "border-amber-200 bg-amber-50 text-amber-700" },
-    failed: { label: "Failed", className: "border-red-200 bg-red-50 text-red-700" },
-    queued: { label: "Queued", className: "border-border bg-muted text-muted-foreground" },
-    processing: { label: "Processing", className: "border-border bg-muted text-muted-foreground" },
-  };
-  const { label, className } = variants[status] ?? { label: status, className: "border-border bg-muted text-muted-foreground" };
+// StatusBadge now lives in ./StatusBadge so the Discovered queue can render the
+// same pill — a discovered document IS an ordinary pending_review document.
+
+/**
+ * The source-date box in the review drawer, shared by both review modes.
+ *
+ * Auto-discovered documents arrive with `sourceDate: "unknown"` — the backend
+ * says so explicitly rather than inventing a date. The box is left BLANK in that
+ * case (the word "unknown" sitting in a date field reads as a value), and the
+ * fact is stated above it instead. Blank also means approve omits the field, so
+ * the server's recorded "unknown" survives untouched.
+ */
+function SourceDateField({
+  value,
+  onChange,
+  disabled,
+  unknown,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+  unknown: boolean;
+}) {
   return (
-    <span
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${className}`}
-      title={status === "failed" && failureReason ? failureReason : undefined}
-    >
-      {status === "processing" && <Loader2 size={10} className="animate-spin" />}
-      {label}
-      {status === "failed" && failureReason && (
-        <span className="ml-1 text-[10px] opacity-80">— {failureReason}</span>
+    <div className="flex flex-col gap-1">
+      <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        Source date
+        <InfoTip label="When this guidance was published. Clinical advice goes out of date, so an undated document needs more scrutiny — not less." />
+      </label>
+      {unknown && (
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+          {/* Explicit {" "} — the compiler strips the literal space between an
+              element and the text node that follows it. */}
+          <strong>No publication date.</strong>{" "}
+          The publisher didn&apos;t state one and the backend never guesses. Leave this blank unless
+          you find a date inside the document — it stays recorded as unknown either way.
+        </p>
       )}
-    </span>
+      <Input
+        placeholder="e.g. Jan 2024 (leave blank if unknown)"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+      />
+    </div>
   );
 }
 
@@ -144,6 +174,19 @@ export default function KnowledgeBasePage() {
 
   // Version info (v2)
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
+
+  // ── Discovered queue ──────────────────────────────────────────────────────
+  // Documents the backend fetched by itself for questions customers asked that
+  // the KB couldn't answer. Fetched here rather than inside DiscoveredPanel
+  // because the main Documents list needs the id set to partition on, and one
+  // request should serve both.
+  const [discovered, setDiscovered] = useState<DiscoveredDocument[]>([]);
+  const [discoveredLoading, setDiscoveredLoading] = useState(true);
+  const [discoveredError, setDiscoveredError] = useState<string | null>(null);
+  const [discoveredUnavailable, setDiscoveredUnavailable] = useState(false);
+  const [listView, setListView] = useState<"documents" | "discovered">("documents");
+  // Scroll target for the top-of-page "documents waiting" banner.
+  const listSectionRef = useRef<HTMLDivElement>(null);
 
   // Single upload state
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -265,6 +308,43 @@ export default function KnowledgeBasePage() {
       .catch(() => {});
   }, []);
 
+  // Deliberately does NOT flip `discoveredLoading` on: the mount effect calls
+  // this, and setting state synchronously in an effect body is a lint error here
+  // (react-hooks/set-state-in-effect). The initial state is already `true`; the
+  // manual Refresh path goes through `refreshDiscovered` below, which does show
+  // the spinner.
+  // Promise-chain style rather than async/await to match fetchDocs/fetchOverview
+  // above — the effect-safety lint treats an awaited continuation as potentially
+  // synchronous and flags the mount call otherwise.
+  const loadDiscovered = useCallback(() => {
+    return fetchDiscovered().then((outcome) => {
+      // fetchDiscovered never throws — it returns the failure as a variant.
+      if (outcome.kind === "ok") {
+        setDiscovered(outcome.docs);
+        setDiscoveredError(null);
+        setDiscoveredUnavailable(false);
+      } else if (outcome.kind === "unavailable") {
+        // 404 — this backend predates the feature. An empty list PLUS the
+        // "unavailable" flag is the truthful state; the panel renders it as a
+        // capability gap rather than as an empty queue.
+        setDiscovered([]);
+        setDiscoveredError(null);
+        setDiscoveredUnavailable(true);
+      } else {
+        setDiscovered([]);
+        setDiscoveredError(outcome.message);
+        setDiscoveredUnavailable(false);
+      }
+      setDiscoveredLoading(false);
+    });
+  }, []);
+
+  /** Operator-triggered re-read — shows the spinner, unlike the mount load. */
+  const refreshDiscovered = useCallback(() => {
+    setDiscoveredLoading(true);
+    loadDiscovered();
+  }, [loadDiscovered]);
+
   // ── Polling: main docs list ───────────────────────────────────────────────
   // Arms one timer whenever any doc is in-progress. React re-runs the effect
   // each time fetchDocs() updates `docs`, so exactly one timer is live at a
@@ -304,6 +384,7 @@ export default function KnowledgeBasePage() {
     fetchDocs();
     fetchOverview();
     fetchVersion();
+    loadDiscovered();
     return () => {
       if (batchPollTimerRef.current) clearTimeout(batchPollTimerRef.current);
       if (pdfObjectUrlRef.current) URL.revokeObjectURL(pdfObjectUrlRef.current);
@@ -482,7 +563,12 @@ export default function KnowledgeBasePage() {
       const r = await api.get<ReviewResponse>(`/rag/documents/${documentId}/review`);
       if (reviewReqRef.current !== token) return; // dialog closed while in flight
       setReviewDoc(r.data);
-      setSourceDate(r.data.sourceDate ?? "");
+      // Auto-discovered documents come back with the LITERAL string "unknown"
+      // here (verified on dev — every discovered row does). Prefilling a date
+      // field with the word "unknown" reads as a value; leaving it blank reads as
+      // what it is. Blank also means handleApprove omits `sourceDate` entirely,
+      // so the server's own "unknown" is left untouched rather than overwritten.
+      setSourceDate(isSourceDateUnknown(r.data.sourceDate) ? "" : r.data.sourceDate ?? "");
       // For forced_side_by_side, fetch the source PDF as an authenticated blob.
       if (r.data.reviewMode === "forced_side_by_side") {
         setPdfLoading(true);
@@ -540,6 +626,9 @@ export default function KnowledgeBasePage() {
       fetchDocs();
       fetchOverview();
       fetchVersion();
+      // An approved discovered document leaves the queue — re-read it so the tab
+      // count can't keep claiming something is still waiting for review.
+      loadDiscovered();
     } catch (err: unknown) {
       const data = (err as { response?: { data?: { code?: string; message?: string } } })?.response?.data;
       if (data?.code === "tables_not_reviewed") {
@@ -570,6 +659,7 @@ export default function KnowledgeBasePage() {
       fetchDocs();
       fetchOverview();
       fetchVersion();
+      loadDiscovered();
     } catch {
       toast.error("Delete failed.");
     } finally {
@@ -580,7 +670,32 @@ export default function KnowledgeBasePage() {
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
+  /**
+   * Partition the main list so uploaded and auto-discovered documents aren't
+   * silently mixed. See DISCOVERED_PARTITION_NOTE in discovery.ts for why this
+   * is done by id rather than by the `sourceUrl` the handoff suggested.
+   *
+   * The partition is applied ONLY when the discovered fetch actually succeeded.
+   * If it failed we show the unfiltered list and say so: a list that looks
+   * filtered but isn't would quietly present machine-fetched clinical content as
+   * something a human uploaded.
+   */
+  const discoveredPartitionApplied =
+    !discoveredLoading && discoveredError === null && !discoveredUnavailable;
+  const discoveredIds = new Set(discovered.map((d) => d.documentId));
+  const uploadedDocs = discoveredPartitionApplied
+    ? docs.filter((d) => !discoveredIds.has(d.documentId))
+    : docs;
+  // How many rows the split actually removed from the visible list. Not the same
+  // as `discovered.length`: the docs list is capped at 500 and a discovered
+  // document could sit outside it, so stating the queue size here would be a
+  // claim about a list we can't see all of.
+  const hiddenDiscoveredCount = docs.length - uploadedDocs.length;
+
   const isForcedSBS = reviewDoc?.reviewMode === "forced_side_by_side";
+  // The server told us it has no publication date for this document (literally
+  // `"unknown"`, or absent). Surfaced in the drawer rather than swallowed.
+  const reviewSourceDateUnknown = isSourceDateUnknown(reviewDoc?.sourceDate);
   // F1: defensive derived vars — null API fields must not white-screen the dialog
   const conflicts = reviewDoc?.numericConflicts ?? [];
   const tables = reviewDoc?.tables ?? [];
@@ -611,6 +726,32 @@ export default function KnowledgeBasePage() {
   return (
     <AdminLayout title="Knowledge Base">
       <div className="flex flex-col gap-6">
+
+        {/* The Discovered queue sits below four upload cards — roughly 1,500px
+            down on desktop and far further on a phone. A review queue nobody
+            scrolls to is the same failure this feature exists to fix, so when
+            something is actually waiting, say so at the top and jump to it.
+            Rendered only when the count is KNOWN and non-zero: no banner is not
+            a claim that the queue is empty. */}
+        {!discoveredLoading && !discoveredError && !discoveredUnavailable && discovered.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              setListView("discovered");
+              listSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+            className="flex w-full items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-left text-xs text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+          >
+            <AlertTriangle size={13} className="shrink-0" />
+            <span>
+              <strong>
+                {discovered.length} auto-discovered document{discovered.length !== 1 ? "s" : ""} waiting
+              </strong>{" "}
+              — fetched from the internet for questions customers asked. Nobody has read them yet.
+            </span>
+            <span className="ml-auto shrink-0 font-medium underline underline-offset-2">Review</span>
+          </button>
+        )}
 
         {/* Coverage strip */}
         <div className="flex flex-col gap-2">
@@ -948,21 +1089,83 @@ export default function KnowledgeBasePage() {
           </Card>
         )}
 
-        {/* Documents table */}
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium">Documents</h2>
-            {/* "loaded", not "total" — see DOCS_LIST_CAP. */}
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              {docs.length} loaded
-              {docs.length >= DOCS_LIST_CAP && (
-                <>
-                  <AlertTriangle size={12} className="text-amber-400" />
-                  <InfoTip label={DOCS_CAP_EXPLAINER} />
-                </>
-              )}
-            </span>
+        {/* ── Lists: uploaded documents vs the discovered queue ──────────────
+            Used as a segmented switch (the house pattern — see app/bookings),
+            not as base-ui TabsContent panels: the upload cards above stay
+            mounted, and a half-typed paste can't be discarded by a tab click. */}
+        <div ref={listSectionRef} className="flex flex-col gap-3 scroll-mt-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Tabs value={listView} onValueChange={(v) => setListView(v as "documents" | "discovered")}>
+              <TabsList>
+                <TabsTrigger value="documents">Documents</TabsTrigger>
+                <TabsTrigger value="discovered">
+                  Discovered
+                  {/* The count is only rendered when it's known. A silent "0"
+                      while loading — or after the fetch failed — would read as
+                      "nothing is waiting", which is a claim we can't make. */}
+                  {!discoveredLoading && !discoveredError && !discoveredUnavailable && (
+                    <span
+                      className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
+                        discovered.length > 0
+                          ? "bg-amber-500/20 text-amber-700 dark:text-amber-400"
+                          : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {discovered.length}
+                    </span>
+                  )}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            {listView === "documents" && (
+              /* "loaded", not "total" — see DOCS_LIST_CAP. */
+              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                {uploadedDocs.length} loaded
+                {docs.length >= DOCS_LIST_CAP && (
+                  <>
+                    <AlertTriangle size={12} className="text-amber-400" />
+                    <InfoTip label={DOCS_CAP_EXPLAINER} />
+                  </>
+                )}
+              </span>
+            )}
           </div>
+
+          {listView === "discovered" ? (
+            <DiscoveredPanel
+              docs={discovered}
+              loading={discoveredLoading}
+              error={discoveredError}
+              unavailable={discoveredUnavailable}
+              onReview={openReview}
+              onRefresh={() => { refreshDiscovered(); fetchDocs(); }}
+            />
+          ) : (
+          <>
+          {/* The split is never silent: say what was moved out, or say the split
+              couldn't be made. See DISCOVERED_PARTITION_NOTE. */}
+          {!docsLoading && discoveredPartitionApplied && hiddenDiscoveredCount > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {hiddenDiscoveredCount} auto-discovered document
+              {hiddenDiscoveredCount !== 1 ? "s are" : " is"} listed under{" "}
+              <button
+                type="button"
+                onClick={() => setListView("discovered")}
+                className="font-medium text-primary underline underline-offset-2 hover:no-underline"
+              >
+                Discovered
+              </button>
+              , not here. <InfoTip label={DISCOVERED_PARTITION_NOTE} />
+            </p>
+          )}
+          {!docsLoading && !discoveredLoading && !discoveredPartitionApplied && !discoveredUnavailable && (
+            <p className="inline-flex flex-wrap items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle size={12} className="shrink-0" />
+              The discovered queue couldn&apos;t be loaded, so this list may include
+              auto-discovered documents that nobody has read.
+            </p>
+          )}
 
           {docsLoading ? (
             <div className="flex flex-col gap-2">
@@ -981,7 +1184,7 @@ export default function KnowledgeBasePage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {docs.map((doc) => (
+                  {uploadedDocs.map((doc) => (
                     <TableRow key={doc.documentId}>
                       <TableCell className="font-medium max-w-xs truncate">{doc.title}</TableCell>
                       <TableCell className="text-right tabular-nums">{doc.chunkCount}</TableCell>
@@ -1015,16 +1218,22 @@ export default function KnowledgeBasePage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {docs.length === 0 && (
+                  {uploadedDocs.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                        No documents yet — upload a PDF to get started.
+                        {/* "You haven't uploaded anything" ≠ "the knowledge base is
+                            empty" once discovered documents have been split out. */}
+                        {hiddenDiscoveredCount > 0
+                          ? "Nothing uploaded by hand — every document here was auto-discovered. See the Discovered tab."
+                          : "No documents yet — upload a PDF to get started."}
                       </TableCell>
                     </TableRow>
                   )}
                 </TableBody>
               </Table>
             </div>
+          )}
+          </>
           )}
         </div>
       </div>
@@ -1183,16 +1392,12 @@ export default function KnowledgeBasePage() {
                     </pre>
                   </div>
 
-                  {/* Source date input */}
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs font-medium text-muted-foreground">Source date</label>
-                    <Input
-                      placeholder="e.g. Jan 2024 (leave blank if unknown)"
-                      value={sourceDate}
-                      onChange={(e) => setSourceDate(e.target.value)}
-                      disabled={approving}
-                    />
-                  </div>
+                  <SourceDateField
+                    value={sourceDate}
+                    onChange={setSourceDate}
+                    disabled={approving}
+                    unknown={reviewSourceDateUnknown}
+                  />
                 </div>
               </div>
             ) : (
@@ -1280,16 +1485,12 @@ export default function KnowledgeBasePage() {
                   </div>
                 )}
 
-                {/* Source date input */}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-medium text-muted-foreground">Source date</label>
-                  <Input
-                    placeholder="e.g. Jan 2024 (leave blank if unknown)"
-                    value={sourceDate}
-                    onChange={(e) => setSourceDate(e.target.value)}
-                    disabled={approving}
-                  />
-                </div>
+                <SourceDateField
+                  value={sourceDate}
+                  onChange={setSourceDate}
+                  disabled={approving}
+                  unknown={reviewSourceDateUnknown}
+                />
               </div>
             )
           ) : null}

@@ -192,3 +192,75 @@ export interface PasteTextResponse {
   title: string;
   status: "pending_review";
 }
+
+// ── Discovered queue (GET /rag/discovered) ───────────────────────────────────
+//
+// The backend replayed 1,248 real production messages against this knowledge
+// base on 2026-08-09: 15 of 22 health questions and 7 of 7 biomarker questions
+// (hs-CRP, creatinine, TSH, HbA1c, vitamin D, haemoglobin) retrieved NOTHING.
+// The KB held 4 documents, all about diet, for a product whose entire value is
+// a blood test. So the backend now records every retrieval miss and goes and
+// fetches candidate documents for the gaps.
+//
+// ⚠️ A discovered document is clinical content that NO HUMAN HAS READ — a
+// machine fetched it off the internet. It lands at `pending_review` and reaches
+// customers only through the same one-at-a-time approve button an uploaded
+// document uses. There is deliberately no bulk path, and this module must not
+// grow one.
+//
+// Verified live against dev 2026-08-09 (3 rows, all `discoveryQuery: "tsh"`)
+// and prod (`[]`, HTTP 200 — the prod miss log only started filling today).
+
+/**
+ * One row of `GET /rag/discovered`. The array is newest-first.
+ *
+ * These same documents ALSO appear in `GET /rag/documents` — they are ordinary
+ * `pending_review` rows there, with no marker distinguishing them (see
+ * DISCOVERED_PARTITION_NOTE in discovery.ts).
+ */
+export interface DiscoveredDocument {
+  documentId: string;
+  title: string;
+  status: DocStatus;
+  /**
+   * Where the machine got it. Remote input, re-checked server-side against a
+   * 16-publisher allowlist — but still never rendered as an href without a
+   * protocol check here (see `safeSourceUrl` in discovery.ts).
+   */
+  sourceUrl: string;
+  /**
+   * Publication date **or the literal string `"unknown"`** — the backend never
+   * invents one. Every dev row is currently `"unknown"`, so that is the common
+   * path, not an edge case.
+   *
+   * NEVER pass this to `new Date()`: it is free-form (`"unknown"`, `"Jan 2024"`,
+   * `"2024-05-07"` have all been observed across this module's endpoints), and
+   * formatting it would turn "we don't know" into a confident-looking date.
+   */
+  sourceDate: string | null;
+  /**
+   * The customer question the KB could not answer — the reason this document
+   * was fetched at all. Frame it as the gap, not as a search term.
+   */
+  discoveryQuery: string | null;
+  /** Always 0 before approval — chunks are created by the approve step. */
+  chunkCount: number;
+  updatedAt: string;
+}
+
+/**
+ * `POST /rag/discover` — runs a discovery pass now instead of waiting for the
+ * weekly job. Bounded to 5 documents per run; a gap must recur twice in 7 days
+ * before it is chased. Takes ~30s and costs a real search-API call.
+ *
+ * `note` is present when nothing was found or no key is set. A 409 means
+ * discovery is not wired in this deployment — that is a capability answer, not
+ * an outage (see `runDiscovery`).
+ */
+export interface DiscoverRunResponse {
+  gaps: string[];
+  fetched: number;
+  queued: number;
+  skippedDuplicate: number;
+  note?: string;
+}
