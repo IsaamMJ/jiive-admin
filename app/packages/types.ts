@@ -194,8 +194,41 @@ export interface CatalogResponse {
 // Hoisted here because these are long, and because two of them are rendered in
 // more than one place and must not drift apart.
 
-export const ACTIVE_EXPLAINER =
-  "Switching a package off does NOT stop bookings. The server falls back to environment config this screen cannot read (getActiveOrFallback), so customers keep being charged — we just stop knowing how much. To change what a customer pays, change the price or the SKU, not this switch.";
+/**
+ * REPLACES `ACTIVE_EXPLAINER`, and the replacement is not a rewording.
+ *
+ * The old text said switching a package off "does NOT stop bookings — the server
+ * falls back to environment config (getActiveOrFallback)". That was true of the
+ * old backend and is now false twice over: `getActiveOrFallback` was DELETED
+ * (package.service.ts:83-93 explains why — every caller passed the literal
+ * 'primary', so isActive was decoration), and the env fallback is no longer
+ * reachable by any admin action, because `deactivate()` refuses to empty the
+ * catalog. Leaving the old copy up would have described a mechanism that does
+ * not exist, on the control that now decides what every customer is charged.
+ */
+export const LIVE_EXPLAINER =
+  "Exactly one package is live, and it is the one every customer gets — the price Lumi quotes in conversation, the amount Razorpay charges, and the Thyrocare panel that is physically drawn. Choosing another switches over inside one database transaction: the old one goes off as the new one comes on, so there is never a moment with two live and never a moment with none. That is also why there is no off switch here.";
+
+/**
+ * Shown on the "make this live too" checkbox inside the SKU dialog, where the
+ * operator is correcting a dormant row and may not have the table in view.
+ */
+export const GO_LIVE_EXPLAINER =
+  "This does not just switch this row on — it switches the currently live package OFF, in the same transaction. From the next booking onward customers are quoted this price and drawn this panel. Leave it unticked to fix a SKU or a price on a row that stays dormant.";
+
+/**
+ * Only reachable before the catalog seed has run, or by a direct database edit —
+ * `deactivate()` will not let an admin get here. Stated as a live hazard rather
+ * than an empty state because the server keeps selling.
+ */
+export const NO_LIVE_EXPLAINER =
+  "No row on this list is live. That does NOT stop sales: the server falls back to the env-configured SKU and price (BIOAGE_CUSTOMER_PRICE_PAISE), which this screen cannot read, and raises a 'no_live_package' ops alert. Customers keep buying — just not the thing anyone here chose. Pick one.";
+
+export const MULTI_LIVE_EXPLAINER =
+  "More than one row reports live. The backend switches packages in one transaction and should make this impossible, so this is either a stale list or a direct database edit. The server does not refuse — it sells the first by display order, then testType, and raises a 'multiple_live_packages' alert. Reload; if it persists, pick the one you want and it will switch the rest off.";
+
+export const BIO_AGE_ROUTING_EXPLAINER =
+  "Only bookings stamped 'biological_age' run the PhenoAge calculation, and only the package with testType 'primary' is stamped that way. Every other package takes the generic results path: markers are stored and shown, with no biological age on the page. Nothing errors — the age is simply absent.";
 
 export const SKU_TYPE_EXPLAINER =
   "Thyrocare has three types: OFFER, SSKU and PSKU. The type is part of the order we send them, and it is not optional in practice — if you change the SKU id and leave the old type behind, Thyrocare rejects the order after the customer has already paid. When we can find the SKU in their catalog we read the type from there; when we can't, you have to tell us.";

@@ -37,7 +37,7 @@ import {
   type Paise,
 } from "../money";
 import {
-  ACTIVE_EXPLAINER,
+  GO_LIVE_EXPLAINER,
   BIO_AGE_EXPLAINER,
   PAISE_ECHO_EXPLAINER,
   SKU_TYPES,
@@ -67,6 +67,14 @@ interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   pkg: Package;
+  /**
+   * The package that is live RIGHT NOW — i.e. the one this dialog's "also make
+   * this live" tick would switch off. Passed in because a single row cannot know
+   * it: exactly one package is live and activating any row deactivates the rest
+   * in one server-side transaction, so the other half of that trade lives in the
+   * page's list, not in `pkg`. Null when nothing on the list is live.
+   */
+  livePackage?: Package | null;
   /** Pre-fill from a journal snapshot (the restore path). Nothing is typed. */
   restoreFrom?: (PanelIdentity & { isActive: boolean }) | null;
   onDone: (row: Package) => void;
@@ -74,7 +82,9 @@ interface Props {
 
 type Stage = "edit" | "confirm";
 
-export function SwitchPanelDialog({ open, onOpenChange, pkg: pkgProp, restoreFrom, onDone }: Props) {
+export function SwitchPanelDialog({
+  open, onOpenChange, pkg: pkgProp, livePackage = null, restoreFrom, onDone,
+}: Props) {
   const isRestore = !!restoreFrom;
 
   // THE BASELINE IS STATE, NOT THE PROP.
@@ -319,9 +329,14 @@ export function SwitchPanelDialog({ open, onOpenChange, pkg: pkgProp, restoreFro
       fastingHours: fastingHoursNum,
     };
     // isActive rides along ONLY when the operator asked for it on the edit
-    // stage, which is a value this callback can actually see. We never send
-    // isActive:false from here — deactivating does not stop bookings, it hands
-    // the price to env config this screen cannot read.
+    // stage, which is a value this callback can actually see.
+    //
+    // `true` IS THE ONLY VALUE THIS DIALOG EVER SENDS. `false` is not withheld
+    // out of caution — the backend refuses it outright when the row is the only
+    // live one (package.service.ts:237, a 400), and there is no other row it
+    // could be correct for: switching packages is activate(other), which
+    // deactivates this one inside the same transaction. Sending `false` from a
+    // SKU-editing dialog could only ever try to empty the catalog.
     if (willActivate) body.isActive = true;
     return body;
   }, [
@@ -598,7 +613,12 @@ export function SwitchPanelDialog({ open, onOpenChange, pkg: pkgProp, restoreFro
                 the body was frozen. Unticked by default; nothing is blocked on
                 it either way. */}
             {willActivateBase && (
-              <label className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-2.5 text-xs">
+              // The InfoTip below is a SIBLING of the <label>, not inside it: an
+              // InfoTip is a real <button>, and a button inside a label
+              // activates the label's control — so tapping "i" on a phone would
+              // tick the box that replaces the live package.
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs">
+                <label className="flex flex-1 items-start gap-2">
                 <input
                   type="checkbox"
                   className="mt-0.5 accent-amber-500"
@@ -606,14 +626,29 @@ export function SwitchPanelDialog({ open, onOpenChange, pkg: pkgProp, restoreFro
                   onChange={(e) => setActivateNow(e.target.checked)}
                 />
                 <span>
+                  {/* WAS "Also switch this row on", which read like adding a
+                      second live package to a list of six independent toggles.
+                      Exactly one is live, so this does not switch a row ON — it
+                      switches the current one OFF and this one on, atomically.
+                      The box names the row it displaces; "the currently live
+                      package" in the abstract is not something you can weigh. */}
                   <span className="font-medium text-foreground">
-                    Also switch this row on
+                    Also make this the live package
                   </span>{" "}
-                  — it is currently off. Leave it unticked to correct the SKU or price without
-                  making the row live.
-                  <InfoTip label={ACTIVE_EXPLAINER} />
+                  {livePackage ? (
+                    <>
+                      — that switches{" "}
+                      <span className="font-medium text-foreground">{livePackage.displayName}</span>{" "}
+                      off in the same move.
+                    </>
+                  ) : (
+                    <>— nothing is live right now, so this would take over from the env default.</>
+                  )}{" "}
+                  Leave it unticked to correct the SKU or price on a row that stays dormant.
                 </span>
-              </label>
+                </label>
+                <span className="mt-0.5 shrink-0"><InfoTip label={GO_LIVE_EXPLAINER} /></span>
+              </div>
             )}
 
             <div className="flex flex-col gap-1.5">
@@ -663,6 +698,7 @@ export function SwitchPanelDialog({ open, onOpenChange, pkg: pkgProp, restoreFro
           <ConfirmStage
             body={frozenBody!}
             pkg={pkg}
+            livePackage={livePackage}
             coverage={coverage}
             currentCoverage={currentCoverage}
             match={match}
@@ -750,6 +786,8 @@ function PriceField({
 interface ConfirmProps {
   body: PackagePatchBody;
   pkg: Package;
+  /** The row this change would displace, when `body.isActive` is true. */
+  livePackage: Package | null;
   coverage: ReturnType<typeof coverageForSku>;
   currentCoverage: ReturnType<typeof coverageForSku> | null;
   match: ReturnType<typeof matchSku>;
@@ -803,7 +841,10 @@ function ConfirmStage(p: ConfirmProps) {
   if (!priceMoved) unchanged.push(`price ${rupeesExact(pkg.pricePaise)}`);
   if (body.requiresFasting === pkg.requiresFasting && body.fastingHours === pkg.fastingHours)
     unchanged.push(`fasting ${pkg.requiresFasting ? `${pkg.fastingHours}h` : "not required"}`);
-  if (body.isActive === undefined) unchanged.push(pkg.isActive ? "active" : "inactive");
+  // "live" / "not live", not "active" / "inactive". Six independent Active
+  // toggles are gone; what this row is not changing is whether it is THE live
+  // package, and the old adjective still implied one of many.
+  if (body.isActive === undefined) unchanged.push(pkg.isActive ? "still live" : "still dormant");
   unchanged.push(`position ${pkg.displayOrder}`);
 
   return (
@@ -1016,11 +1057,29 @@ function ConfirmStage(p: ConfirmProps) {
         </label>
       )}
       {/* Stated, never asked for — the decision was made on the edit stage and
-          this is the receipt for it. `body.isActive` is the wire value. */}
+          this is the receipt for it. `body.isActive` is the wire value.
+
+          It names the displaced row. "This also switches the row on" was true of
+          a screen with six independent toggles and is now half a sentence: the
+          server deactivates every other package in the same transaction, so the
+          unstated half is which package stops selling. */}
       {body.isActive === true && (
         <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-600 dark:text-amber-400">
           <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-          This also switches the row <span className="font-medium">on</span> — it is off right now.
+          <span>
+            This also makes <span className="font-medium">{pkg.displayName}</span> the live
+            package —{" "}
+            {p.livePackage ? (
+              <>
+                <span className="font-medium">{p.livePackage.displayName}</span> (
+                <span className="font-mono">{p.livePackage.thyrocareSkuId}</span> ·{" "}
+                {p.livePackage.skuType} · {rupeesExact(p.livePackage.pricePaise)}) stops selling in
+                the same transaction.
+              </>
+            ) : (
+              <>nothing is live right now, so this takes over from the env-configured default.</>
+            )}
+          </span>
         </p>
       )}
 

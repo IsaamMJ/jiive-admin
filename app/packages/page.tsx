@@ -20,7 +20,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 import {
-  createPackage, fetchPackage, fetchPackages, isNoResponse, patchPackage,
+  createPackage, fetchPackages, isNoResponse, patchPackage,
   serverMessage, statusOf,
 } from "./api";
 import {
@@ -28,12 +28,14 @@ import {
   rupeeInputFromPaise, rupees, rupeesExact,
 } from "./money";
 import * as journal from "./journal";
+import { liveState, servedRow } from "./live";
 import {
-  ACTIVE_EXPLAINER, SKU_TYPES, SWITCH_PANEL_EXPLAINER,
+  LIVE_EXPLAINER, GO_LIVE_EXPLAINER, SKU_TYPES, SWITCH_PANEL_EXPLAINER,
   type Package, type PanelIdentity, type SkuType,
 } from "./types";
 import { SwitchPanelDialog } from "./components/SwitchPanelDialog";
 import { PreviousPanelBar, ReconcileBanner } from "./components/PreviousPanelBar";
+import { GoLiveDialog, LiveNowCard } from "./components/LiveSwitch";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The customer-facing price and panel for every bookable Thyrocare package.
@@ -47,6 +49,25 @@ import { PreviousPanelBar, ReconcileBanner } from "./components/PreviousPanelBar
 //
 // What grades the ceremony is not testType but ISACTIVE — an active row is what
 // customers are being charged right now.
+//
+// ── WHY THE SIX TOGGLES ARE GONE (backend 4e8bad0, 2026-08-09) ──────────────
+// This table rendered one independent on/off switch per row. That control means
+// "any combination of these is selectable", which was harmless while isActive
+// was decoration and is now a lie: exactly ONE package is live, enforced in a
+// database transaction, and deactivating the only live one is a hard 400.
+//
+// So the constraint is now expressed by the control itself — a radio group, one
+// column, leftmost so a phone sees it without scrolling — plus LiveNowCard above
+// the table saying in words which package is live. The operator learns the rule
+// by looking at the screen, not by collecting a red toast.
+//
+// Two consequences that are easy to miss and are handled explicitly below:
+//   1. ACTIVATING ONE DEACTIVATES THE REST, SERVER-SIDE. The PATCH response is
+//      one row; every other row in state is stale the instant it returns. Every
+//      path that can move isActive therefore re-reads the whole list.
+//   2. There is no off switch, so the 400 is unreachable from here — but it is
+//      still caught and rendered VERBATIM, because a second tab or a second
+//      operator can move the live package underneath this one.
 //
 // All axios lives in ./api.ts. Nothing here imports @/lib/api, which is what
 // makes the wire guards there (the unknown-key allowlist, the id/type pairing
@@ -75,7 +96,7 @@ export default function PackagesPage() {
 
   /**
    * Rows whose live value we NO LONGER KNOW, because a write to them never came
-   * back. Keyed by testType, holding what we asked for.
+   * back. Keyed by testType, holding WHICH FIELD is unknown and what we asked.
    *
    * A lost response is not a failed write. lib/api.ts sets no axios timeout and
    * nothing here re-read the row, so the old catch showed a red "Update failed"
@@ -83,10 +104,19 @@ export default function PackagesPage() {
    * independent surfaces both asserting the old price is live, when the PATCH
    * may well have committed. That is the governing-rule violation (an absent
    * signal rendered as a positive assurance) on the customer price itself.
+   *
+   * The `field` discriminator is not tidiness. This map used to hold a bare
+   * string and was written by BOTH the price editor and the active toggle, while
+   * only the PRICE cell read it — so a lost activate rendered, in the price
+   * column, "Last shown ₹999; we asked for active and never heard back". An
+   * unknown price claimed on the strength of a write that never touched the
+   * price, and the actually-unknown live state shown as settled. Each field now
+   * reports its own doubt in its own column.
    */
-  const [unknownRows, setUnknownRows] = useState<Record<string, string>>({});
-  const markUnknown = (testType: string, asked: string) =>
-    setUnknownRows((prev) => ({ ...prev, [testType]: asked }));
+  type UnknownWrite = { field: "price" | "live"; asked: string };
+  const [unknownRows, setUnknownRows] = useState<Record<string, UnknownWrite>>({});
+  const markUnknown = (testType: string, u: UnknownWrite) =>
+    setUnknownRows((prev) => ({ ...prev, [testType]: u }));
   const clearUnknown = (testType: string) =>
     setUnknownRows((prev) => {
       if (!(testType in prev)) return prev;
@@ -98,8 +128,18 @@ export default function PackagesPage() {
   const [switchFor, setSwitchFor] = useState<Package | null>(null);
   const [restoreSnapshot, setRestoreSnapshot] = useState<(PanelIdentity & { isActive: boolean }) | null>(null);
 
-  const [deactivate, setDeactivate] = useState<Package | null>(null);
-  const [togglingType, setTogglingType] = useState<string | null>(null);
+  /** The row the operator has picked in the radio group, pending confirmation. */
+  const [goLive, setGoLive] = useState<Package | null>(null);
+  const [switchingType, setSwitchingType] = useState<string | null>(null);
+  const switchingRef = useRef(false);
+  /**
+   * The server's own refusal text, kept on the PAGE and not only in the dialog.
+   *
+   * A toast is the wrong home for it: it is dismissible, it is gone in five
+   * seconds, and the message it carries names a package, explains why the switch
+   * was refused and says what to do instead. All three survive here.
+   */
+  const [liveError, setLiveError] = useState<string | null>(null);
 
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState({
@@ -129,20 +169,46 @@ export default function PackagesPage() {
     { entry: journal.JournalEntry; verdict: "confirmed" | "failed" | "unresolved" } | null
   >(null);
 
-  const refresh = useCallback(async () => {
+  /**
+   * Read the WHOLE list. Never one row.
+   *
+   * THIS IS THE ONLY CORRECT UNIT OF READ ON THIS SCREEN NOW. Activating a
+   * package deactivates every other one inside the server's transaction
+   * (package.service.ts:205), so a single row's `isActive` is not a fact about
+   * that row — it is a fact about the whole table, and re-reading one row after a
+   * switch produces a list where two rows claim to be live, or none does. The old
+   * per-row `fetchPackage` re-read is gone from this page for exactly that
+   * reason.
+   *
+   * Returns the outcome instead of setting error state, so callers can choose:
+   * the initial load replaces the table with an error panel, a mid-edit re-read
+   * must NOT (BUILD-CHECKLIST #6 — typed input is preserved on error).
+   */
+  const readList = useCallback(async (): Promise<
+    { ok: true; list: Package[] } | { ok: false; message: string }
+  > => {
     try {
       const list = await fetchPackages();
       setPackages(list);
       setLoad({ status: "ready" });
-      return list;
+      // A successful full read means we know every row again — including any we
+      // had marked unknown after a lost response.
+      setUnknownRows({});
+      return { ok: true, list };
     } catch (err) {
-      setLoad({
-        status: "error",
+      return {
+        ok: false,
         message: serverMessage(err, (err as Error)?.message || "Couldn't read the packages."),
-      });
-      return null;
+      };
     }
   }, []);
+
+  /** Initial load and the "Try again" button: a failure replaces the table. */
+  const refresh = useCallback(async () => {
+    const r = await readList();
+    if (!r.ok) setLoad({ status: "error", message: r.message });
+    return r;
+  }, [readList]);
 
   // Deferred out of the effect body so no setState runs synchronously inside it
   // (react-hooks/set-state-in-effect is an error in this repo).
@@ -196,11 +262,35 @@ export default function PackagesPage() {
     return () => clearTimeout(t);
   }, [load.status, packages]);
 
+  // Derived from the list we last READ, never from what we last sent. `liveRow`
+  // is the row the SERVER would sell — in the should-be-impossible two-live case
+  // that is its own deterministic pick, which is not necessarily the first row of
+  // this table. See live.ts:serverOrder.
+  const live = liveState(packages);
+  const liveRow = servedRow(packages);
+
   const applyRow = (row: Package) => {
     setPackages((prev) => prev.map((p) => (p.testType === row.testType ? row : p)));
     // A row we just read back from the server is a row we know again.
     clearUnknown(row.testType);
     setRestorePoints(journal.allRestorePoints());
+  };
+
+  /**
+   * What SwitchPanelDialog hands back, plus the one thing a single row cannot
+   * tell you.
+   *
+   * That dialog can send `isActive: true` (its "also make this the live package"
+   * tick), and the server then deactivates every OTHER row in the same
+   * transaction. Its response carries only the row it edited, so applying just
+   * that row leaves the previously live package still painted as live and the
+   * card above reporting two. The re-read is conditional on the returned row
+   * being live because that is precisely the case in which the other rows moved;
+   * a dormant row's edit cannot have changed anyone else's isActive.
+   */
+  const applySwitchResult = (row: Package) => {
+    applyRow(row);
+    if (row.isActive) void readList();
   };
 
   // ── Inline price edit (unchanged behaviour, one conversion) ───────────────
@@ -310,7 +400,7 @@ export default function PackagesPage() {
         // A TIMEOUT IS NOT PROOF THE WRITE DIDN'T LAND. Leave the entry pending
         // for the reconciler, and stop the table asserting the old price — we do
         // not know it any more.
-        markUnknown(p.testType, rupeesExact(parsed.paise));
+        markUnknown(p.testType, { field: "price", asked: rupeesExact(parsed.paise) });
         setPriceError(
           `We didn't hear back, so we don't know whether ${rupeesExact(parsed.paise)} applied. Nothing was retried. Re-read the package to see what customers are being charged.`,
         );
@@ -325,49 +415,138 @@ export default function PackagesPage() {
     }
   };
 
-  /** Re-read one row from the server. The ONLY offered action after a lost
-   *  response — a blind retry could apply the same change twice. */
-  const rereadRow = async (testType: string) => {
-    try {
-      const live = await fetchPackage(testType);
-      applyRow(live);
-      setPriceError("");
-      toast.info(`${live.displayName} is ${rupees(live.pricePaise)} on the server.`);
-    } catch (err) {
-      toast.error(serverMessage(err, "Couldn't re-read that package."));
+  /**
+   * Re-read after an ambiguous write. The ONLY offered action after a lost
+   * response — a blind retry could apply the same change twice.
+   *
+   * Reads the WHOLE list, not the one row, and does not tear the table down if
+   * it fails. See readList().
+   */
+  const rereadAll = async (focus?: string) => {
+    const r = await readList();
+    if (!r.ok) {
+      toast.error(r.message);
+      return;
     }
+    setPriceError("");
+    setLiveError(null);
+    const row = focus ? r.list.find((p) => p.testType === focus) : null;
+    if (focus && !row) {
+      // The row we were unsure about is not on the server at all. Saying nothing,
+      // or reporting the live package instead, would let that pass unnoticed.
+      toast.error(`There is no "${focus}" package on this server any more.`);
+      return;
+    }
+    if (row) {
+      // Answer the question that was actually asked — what is THIS row's price —
+      // and only then whether it is the one being sold.
+      toast.info(
+        `${row.displayName} is ${rupees(row.pricePaise)} on the server${row.isActive ? " and it is the live package" : " and it is dormant"}.`,
+      );
+      return;
+    }
+    const live = servedRow(r.list);
+    toast.info(
+      live
+        ? `${live.displayName} · ${rupees(live.pricePaise)} is live on the server.`
+        : "The server has no live package.",
+    );
   };
 
-  // ── Active toggle ─────────────────────────────────────────────────────────
-  const setActive = async (p: Package, next: boolean) => {
-    setTogglingType(p.testType);
-    setDeactivate(null);
+  // ── Making one package live ───────────────────────────────────────────────
+  //
+  // There is deliberately no deactivate. "Nothing live" is not a state an
+  // operator can usefully want — it does not stop sales, it silently swaps every
+  // customer onto the env default — so the backend refuses it, and the only
+  // sensible control is "which one", not "on/off" ×6.
+  //
+  // NOT JOURNALLED, and that is a decision rather than an omission. journal.ts
+  // exists because a PATCH that overwrites a SKU/price destroys the only copy of
+  // the old values — the server keeps no history. A live switch destroys nothing:
+  // the previously live row still exists with its SKU and price intact, and
+  // putting it back is one radio tap. Writing an entry here would additionally
+  // poison PreviousPanelBar with a restore point whose panel identity is
+  // unchanged, i.e. a "Put this back" button that opens the SKU dialog and
+  // immediately reports "Nothing has changed yet".
+  const goLiveNow = async (p: Package) => {
+    if (switchingRef.current) return;
+    switchingRef.current = true;
+    setSwitchingType(p.testType);
+    setLiveError(null);
     try {
-      // NO OPTIMISTIC FLIP. The previous version painted the new state first and
-      // reverted on failure; the row now moves only when the server says so.
-      const result = await patchPackage(p.testType, { isActive: next }, p);
-      applyRow(result.row);
-      if (result.kind === "noOp") {
-        toast.info(`${p.displayName} was already ${next ? "active" : "inactive"}.`);
-      } else if (result.kind === "partial") {
-        toast.error(`The server did not apply that — ${p.displayName} is still ${result.row.isActive ? "active" : "inactive"}.`);
+      // NO OPTIMISTIC FLIP. The radio does not move until the server says so —
+      // and then it moves because the re-read below says so, not because the
+      // request returned.
+      const result = await patchPackage(p.testType, { isActive: true }, p);
+
+      // THE PATCH RESPONSE IS ONE ROW; THE SWITCH TOUCHED ALL OF THEM. Applying
+      // only this row would leave the previously live package still rendering as
+      // live, and the LiveNowCard would then report two. Re-read the list before
+      // saying a single word about the outcome.
+      const r = await readList();
+      if (!r.ok) {
+        // The write landed (we have its response) but we can no longer see the
+        // table. Do not claim the switch is complete.
+        setLiveError(
+          `${p.displayName} was accepted, but we couldn't re-read the list afterwards, so we can't show you which package is live. The server said: ${r.message}`,
+        );
+        setGoLive(null);
+        return;
+      }
+
+      // A 200 IS NOT A SUCCESS. Verify against the list we just read, not
+      // against the response we just got.
+      const after = liveState(r.list);
+      const isLive = after.kind === "one" && after.row.testType === p.testType;
+      if (isLive) {
+        setGoLive(null);
+        toast.success(
+          `${result.row.displayName} is live — ${result.row.thyrocareSkuId} · ${result.row.skuType} · ${rupeesExact(result.row.pricePaise)}`,
+        );
       } else {
-        toast.success(`${p.displayName} ${next ? "activated" : "deactivated"}`);
+        // Includes the partial/no-op cases and anything a concurrent operator
+        // did in the gap. Say what IS live rather than what we asked for.
+        setGoLive(null);
+        setLiveError(
+          after.kind === "none"
+            ? `We asked for ${p.displayName} and the server accepted it, but the list now shows nothing live. Reload before booking anything.`
+            : after.kind === "many"
+              ? `We asked for ${p.displayName}, and ${after.rows.length} packages now report live. The server is selling ${after.served.displayName}.`
+              : `We asked for ${p.displayName}, but ${after.row.displayName} is what the server says is live.`,
+        );
       }
     } catch (err) {
       if (isNoResponse(err)) {
-        // Same rule as the price. Per ACTIVE_EXPLAINER a landed deactivate hands
-        // pricing to env config this screen cannot read, so a bare "Update
-        // failed" here is also a false all-clear about money.
-        markUnknown(p.testType, next ? "active" : "inactive");
-        toast.error(
-          `We didn't hear back — we don't know whether ${p.displayName} is ${next ? "active" : "inactive"} now. Re-read it.`,
+        // A TIMEOUT IS NOT PROOF THE WRITE DIDN'T LAND. Do not re-render the old
+        // live row as settled fact — mark it unknown and offer a re-read, never
+        // a retry that could switch a package the operator has since changed.
+        markUnknown(p.testType, { field: "live", asked: "live" });
+        setLiveError(
+          `We didn't hear back, so we don't know whether ${p.displayName} is live now. Nothing was retried. Reload the list to see what customers are being sold.`,
+        );
+        // CLOSE THE DIALOG. Leaving it open would re-enable "Go live at ₹X"
+        // under that sentence, and the one action this module never offers after
+        // a lost response is the same write again — the first one may have
+        // landed. The page banner's only button is "Reload the list".
+        setGoLive(null);
+      } else if (statusOf(err) === 403) {
+        setLiveError(
+          "Your login can view this page but can't change packages — that needs an admin role.",
         );
       } else {
-        toast.error(serverMessage(err, "Update failed"));
+        // VERBATIM. The one refusal this endpoint has — deactivating the only
+        // live package (package.service.ts:239) — arrives as a 400 whose message
+        // names the package, explains that leaving none live would silently sell
+        // the env default, and says to activate another instead. Unreachable from
+        // a radio group, but another tab or another operator can move the live
+        // package underneath us, so it is caught and shown as written.
+        setLiveError(serverMessage(err, "The server refused that change."));
+        // Whatever went wrong, our picture of the list is now suspect.
+        void readList();
       }
     } finally {
-      setTogglingType(null);
+      switchingRef.current = false;
+      setSwitchingType(null);
     }
   };
 
@@ -419,8 +598,14 @@ export default function PackagesPage() {
         displayOrder,
         isActive: addForm.isActive,
       });
-      toast.success(`Created ${addForm.displayName.trim()}${addForm.isActive ? "" : " (inactive)"}`);
+      toast.success(
+        addForm.isActive
+          ? `Created ${addForm.displayName.trim()} and made it the live package${liveRow ? ` — ${liveRow.displayName} is now off` : ""}`
+          : `Created ${addForm.displayName.trim()} (dormant — nothing is being sold from it yet)`,
+      );
       setAddOpen(false);
+      // The whole list, because an isActive:true create just deactivated every
+      // other row inside the server's transaction.
       void refresh();
     } catch (err) {
       if (statusOf(err) === 409) return fail(`A package with testType "${testType}" already exists`);
@@ -466,13 +651,42 @@ export default function PackagesPage() {
       <div className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-4">
           <p className="text-sm text-muted-foreground">
-            Customer-facing price and Thyrocare panel for each bookable package. Changes affect new
-            bookings only — existing bookings keep the amount and SKU they were created with.
+            Customer-facing price and Thyrocare panel for each bookable package. Exactly one is
+            live. Changes affect new bookings only — existing bookings keep the amount and SKU they
+            were created with.
           </p>
           <Button size="sm" className="shrink-0" onClick={openAdd}>
             <Plus size={15} /> Add package
           </Button>
         </div>
+
+        {/* The current answer, above the fold and above the table. It renders
+            only once we have actually read the list — a card that said "no
+            package is live" while the first GET was still in flight would be
+            manufacturing an absence out of a pending request. */}
+        {load.status === "ready" && packages.length > 0 && (
+          <LiveNowCard state={live} onReload={() => { void rereadAll(); }} />
+        )}
+
+        {/* The server's refusal, verbatim, kept until it is dismissed. Suppressed
+            while the confirm dialog is open because the dialog is already showing
+            the same text next to the action that produced it. */}
+        {liveError && !goLive && (
+          <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3.5 text-sm">
+            <div className="flex items-center gap-1.5 font-semibold text-destructive">
+              <AlertTriangle size={15} className="shrink-0" /> The live package did not change.
+            </div>
+            <p className="mt-1 text-xs text-foreground">{liveError}</p>
+            <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
+              <Button size="sm" variant="outline" onClick={() => { void rereadAll(); }}>
+                Reload the list
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setLiveError(null)}>
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        )}
 
         {reconcile && (
           <ReconcileBanner
@@ -513,15 +727,18 @@ export default function PackagesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-12">#</TableHead>
+                  {/* LEFTMOST, and it replaced the displayOrder "#" column.
+                      This is the one control on the screen a phone must be able
+                      to reach without scrolling sideways; the row's position is
+                      decoration and has moved in beside the name. */}
+                  <TableHead className="w-16">
+                    <span className="flex items-center gap-1.5">
+                      Live <InfoTip label={LIVE_EXPLAINER} />
+                    </span>
+                  </TableHead>
                   <TableHead>Package</TableHead>
                   <TableHead>SKU</TableHead>
                   <TableHead>Fasting</TableHead>
-                  <TableHead>
-                    <span className="flex items-center gap-1.5">
-                      Active <InfoTip label={ACTIVE_EXPLAINER} />
-                    </span>
-                  </TableHead>
                   <TableHead>Price</TableHead>
                   <TableHead>Updated</TableHead>
                 </TableRow>
@@ -531,19 +748,75 @@ export default function PackagesPage() {
                   // NOT "no packages configured". A well-formed empty list is
                   // the server telling us it has none to show — which is not the
                   // same as none existing, and customers may still be charged
-                  // from the env fallback (see ACTIVE_EXPLAINER).
-                  <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-6">
+                  // from the env fallback (see NO_LIVE_EXPLAINER).
+                  <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-6">
                     The server returned no packages. That is not the same as there being none —
                     bookings can still be priced from environment config this screen can&rsquo;t read.
                   </TableCell></TableRow>
                 ) : packages.map((p) => {
                   const editing = editingType === p.testType;
+                  const unknown = unknownRows[p.testType];
                   return (
                     <TableRow key={p.testType} className={cn(!p.isActive && "opacity-60")}>
-                      <TableCell className="text-muted-foreground tabular-nums">{p.displayOrder}</TableCell>
+                      {/* ── The radio group ────────────────────────────────
+                          One `name`, so the browser and every screen reader
+                          describe this as a one-of-N choice before anything is
+                          tapped. That is the whole point: the constraint is
+                          legible from the control, not from a 400.
+
+                          NOT OPTIMISTIC. `checked` is read off the row, so the
+                          dot does not move when you tap — it moves when the
+                          re-read after the switch says it moved. */}
+                      <TableCell>
+                        {unknown?.field === "live" ? (
+                          // We asked to make this row live and never heard back.
+                          // Rendering the radio in EITHER position would be a
+                          // claim we cannot support.
+                          <span className="flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                            <AlertTriangle size={13} className="shrink-0" /> Unknown
+                          </span>
+                        ) : (
+                          <label className="flex cursor-pointer items-center gap-1.5">
+                            <input
+                              type="radio"
+                              name="live-package"
+                              className="size-4 shrink-0 accent-primary disabled:cursor-not-allowed"
+                              checked={p.isActive}
+                              disabled={switchingType !== null}
+                              aria-label={
+                                p.isActive
+                                  ? `${p.displayName} is the live package`
+                                  : `Make ${p.displayName} the live package`
+                              }
+                              onChange={() => {
+                                // Already live: nothing to confirm and nothing
+                                // to send. A PATCH here would be a no-op that
+                                // still rewrites updatedAt on every row.
+                                if (p.isActive) return;
+                                setLiveError(null);
+                                setGoLive(p);
+                              }}
+                            />
+                            {switchingType === p.testType ? (
+                              <Loader2 size={13} className="animate-spin text-muted-foreground" />
+                            ) : p.isActive ? (
+                              // A word as well as a dot. In the should-be-
+                              // impossible two-live case the browser will only
+                              // keep one radio visually checked, and this badge
+                              // is what still tells the truth about the other.
+                              <span className="text-[11px] font-medium text-green-700 dark:text-green-400">
+                                LIVE
+                              </span>
+                            ) : null}
+                          </label>
+                        )}
+                      </TableCell>
                       <TableCell>
                         <div className="font-medium">{p.displayName}</div>
-                        <div className="font-mono text-xs text-muted-foreground">{p.testType}</div>
+                        <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+                          {p.testType}
+                          <span className="tabular-nums opacity-60">#{p.displayOrder}</span>
+                        </div>
                       </TableCell>
                       <TableCell>
                         {/* The SKU cell is now the entry point for the switch —
@@ -565,32 +838,6 @@ export default function PackagesPage() {
                       </TableCell>
                       <TableCell className="text-sm">
                         {p.requiresFasting ? `${p.fastingHours}h` : "—"}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={p.isActive}
-                            aria-label={`${p.isActive ? "Deactivate" : "Activate"} ${p.displayName}`}
-                            disabled={togglingType === p.testType}
-                            onClick={() => (p.isActive ? setDeactivate(p) : setActive(p, true))}
-                            className={cn(
-                              "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-                              p.isActive ? "bg-primary" : "bg-muted-foreground/30"
-                            )}
-                          >
-                            <span
-                              className={cn(
-                                "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
-                                p.isActive ? "translate-x-[18px]" : "translate-x-0.5"
-                              )}
-                            />
-                          </button>
-                          <span className={cn("text-xs", p.isActive ? "text-foreground" : "text-muted-foreground")}>
-                            {togglingType === p.testType ? "…" : p.isActive ? "Active" : "Inactive"}
-                          </span>
-                        </div>
                       </TableCell>
                       <TableCell>
                         {editing ? (
@@ -657,18 +904,18 @@ export default function PackagesPage() {
                             )}
 
                             {priceError && <span className="text-xs text-destructive">{priceError}</span>}
-                            {unknownRows[p.testType] !== undefined && (
+                            {unknown?.field === "price" && (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 className="h-7 w-fit"
-                                onClick={() => rereadRow(p.testType)}
+                                onClick={() => { void rereadAll(p.testType); }}
                               >
                                 Re-read the package
                               </Button>
                             )}
                           </div>
-                        ) : unknownRows[p.testType] !== undefined ? (
+                        ) : unknown?.field === "price" ? (
                           // WE DO NOT KNOW THIS PRICE. Showing the pre-write
                           // value here is the assurance the governing rule
                           // forbids — the write may well have landed.
@@ -677,14 +924,14 @@ export default function PackagesPage() {
                               <AlertTriangle size={13} /> Unknown
                             </span>
                             <span className="text-[11px] text-muted-foreground">
-                              Last shown {rupees(p.pricePaise)}; we asked for {unknownRows[p.testType]} and
+                              Last shown {rupees(p.pricePaise)}; we asked for {unknown.asked} and
                               never heard back.
                             </span>
                             <Button
                               size="sm"
                               variant="outline"
                               className="h-7"
-                              onClick={() => rereadRow(p.testType)}
+                              onClick={() => { void rereadAll(p.testType); }}
                             >
                               Re-read
                             </Button>
@@ -714,8 +961,8 @@ export default function PackagesPage() {
 
         {load.status === "ready" && packages.length > 0 && (
           <p className="text-[11px] text-muted-foreground">
-            Tap a SKU to switch which Thyrocare panel customers get.{" "}
-            <InfoTip label={SWITCH_PANEL_EXPLAINER} />
+            Pick the radio to change which package is live. Tap a SKU to switch which Thyrocare
+            panel that package gets. <InfoTip label={SWITCH_PANEL_EXPLAINER} />
           </p>
         )}
       </div>
@@ -729,44 +976,46 @@ export default function PackagesPage() {
           open={!!switchFor}
           onOpenChange={(v) => { if (!v) { setSwitchFor(null); setRestoreSnapshot(null); } }}
           pkg={switchFor}
+          // So the dialog can NAME what its "also make this live" tick would
+          // switch off, instead of saying "this row is currently off" and
+          // leaving the other half of the trade unstated.
+          livePackage={liveRow}
           restoreFrom={restoreSnapshot}
-          onDone={applyRow}
+          onDone={applySwitchResult}
         />
       )}
 
-      {/* Deactivation used to be a single optimistic tap with no confirmation at
-          all. It now says what switching a row off actually does — which is not
-          what the word "inactive" implies. */}
-      <Dialog open={!!deactivate} onOpenChange={(v) => { if (!v) setDeactivate(null); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Switch {deactivate?.displayName} off?</DialogTitle>
-            <DialogDescription>
-              This does <span className="font-medium text-foreground">not</span> stop bookings.
-              The server falls back to environment config this screen can&rsquo;t read, so customers
-              keep being charged — we just stop knowing how much. To change what a customer pays,
-              change the price or the SKU instead.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-            <Button variant="outline" onClick={() => setDeactivate(null)}>Cancel</Button>
-            <Button
-              variant="destructive"
-              disabled={togglingType === deactivate?.testType}
-              onClick={() => deactivate && setActive(deactivate, false)}
-            >
-              Switch it off anyway
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* There is no deactivate dialog any more. It used to say switching a row
+          off "does not stop bookings — the server falls back to environment
+          config", which described a code path (getActiveOrFallback) that has
+          since been deleted, and offered a "Switch it off anyway" button for an
+          action the backend now answers with a 400. The replacement is not a
+          better warning; it is not offering the action. */}
+      {goLive && (
+        <GoLiveDialog
+          open={!!goLive}
+          // Closing keeps `liveError`, which then surfaces in the page banner.
+          // Clearing it here would let a server refusal — the one message that
+          // names the package and says what to do instead — be dismissed by the
+          // reflex of tapping outside the dialog. It is cleared when a fresh row
+          // is picked, and by a successful re-read.
+          onOpenChange={(v) => { if (!v) setGoLive(null); }}
+          from={liveRow}
+          to={goLive}
+          busy={switchingType === goLive.testType}
+          error={liveError}
+          onConfirm={() => { void goLiveNow(goLive); }}
+        />
+      )}
 
       <Dialog open={addOpen} onOpenChange={(v) => { if (!creating) setAddOpen(v); }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Add package</DialogTitle>
             <DialogDescription>
-              Creates a new bookable package. Only add a Thyrocare SKU confirmed live by Adhish — a wrong/inactive SKU makes orders fail at Thyrocare. New packages start inactive.
+              Creates a new bookable package. Only add a Thyrocare SKU confirmed live by Adhish — a
+              wrong/inactive SKU makes orders fail at Thyrocare. New packages are created dormant
+              unless you tick &ldquo;make it live&rdquo; below.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={submitAdd} className="flex flex-col gap-3 mt-1">
@@ -830,17 +1079,39 @@ export default function PackagesPage() {
                 onChange={(e) => setAddForm({ ...addForm, description: e.target.value })} />
             </div>
 
-            <div className="flex items-center gap-6">
+            <div className="flex flex-col gap-3">
               <label className="inline-flex items-center gap-2">
                 <input type="checkbox" checked={addForm.requiresFasting}
                   onChange={(e) => setAddForm({ ...addForm, requiresFasting: e.target.checked })} />
                 <span className="text-sm">Requires fasting</span>
               </label>
-              <label className="inline-flex items-center gap-2">
-                <input type="checkbox" checked={addForm.isActive}
-                  onChange={(e) => setAddForm({ ...addForm, isActive: e.target.checked })} />
-                <span className="text-sm">Active immediately</span>
-              </label>
+              {/* WAS "Active immediately", which understated it by exactly the
+                  amount that matters. admin.controller.ts:4110-4129 always
+                  INSERTs with isActive:false and then, if the flag was sent,
+                  runs the same exclusive switch as the radio group — so ticking
+                  this does not add a live package, it REPLACES the live one, on
+                  a SKU that by definition nobody has verified yet. The box names
+                  the row it would displace. */}
+              {/* The InfoTip is a SIBLING of the label, not inside it. An
+                  InfoTip renders a real <button>, and a button inside a <label>
+                  activates the control the label is for — so on a phone, tapping
+                  the "i" to find out what this box does would tick it, and this
+                  is the box that replaces the live package. */}
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5">
+                <label className="flex flex-1 items-start gap-2">
+                  <input type="checkbox" className="mt-0.5 accent-amber-500" checked={addForm.isActive}
+                    onChange={(e) => setAddForm({ ...addForm, isActive: e.target.checked })} />
+                  <span className="text-xs">
+                    <span className="text-sm font-medium">Make it the live package immediately</span>
+                    <span className="mt-0.5 block text-muted-foreground">
+                      {liveRow
+                        ? <>This switches <span className="font-medium text-foreground">{liveRow.displayName}</span> off and starts selling this one at the price above. Leave it unticked to create the row dormant and check it first.</>
+                        : <>Nothing is live right now, so this would take over from the env-configured default. Leave it unticked to create the row dormant and check it first.</>}
+                    </span>
+                  </span>
+                </label>
+                <span className="mt-0.5 shrink-0"><InfoTip label={GO_LIVE_EXPLAINER} /></span>
+              </div>
             </div>
 
             {addError && <p className="text-sm text-destructive">{addError}</p>}
