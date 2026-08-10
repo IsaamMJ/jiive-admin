@@ -2,6 +2,35 @@ export type DocStatus = "queued" | "processing" | "pending_review" | "ready" | "
 
 export type BatchDocStatus = "uploaded" | "parsing" | "parsed" | "ready" | "failed";
 
+/**
+ * One row of `GET /rag/documents` (a bare array, capped at 500 — see
+ * DOCS_LIST_CAP in page.tsx).
+ *
+ * ── PROVENANCE FIELDS (added by backend c795d8a) ────────────────────────────
+ * `sourceUrl` / `discoveredVia` / `discoveryQuery` say whether a MACHINE found
+ * this document on the internet rather than a human uploading it. That is the
+ * difference between "someone chose this" and "nobody has ever read this", so
+ * it must travel with the row.
+ *
+ * They are typed OPTIONAL because a deployment that predates c795d8a omits the
+ * keys entirely, and the absence of a key is NOT the same fact as a null value:
+ *
+ *   key absent  → this server cannot tell us where documents came from.
+ *   key present, value null → this server checked, and a human uploaded it.
+ *
+ * Collapsing those two into `sourceUrl == null` is exactly the bug this module
+ * exists to avoid, so `readProvenance()` in discovery.ts distinguishes them and
+ * every consumer goes through it. Do not test `doc.sourceUrl` directly.
+ *
+ * Verified live 2026-08-10 — BOTH environments now send all three keys, with
+ * explicit nulls on hand-uploaded rows:
+ *   DEV  7 rows: 3 carry sourceUrl + discoveredVia:"exa" + discoveryQuery:"tsh";
+ *        the other 4 carry all three keys as null.
+ *   PROD 4 rows: all four carry the keys, all null (no discovery has run there).
+ * So the "keys absent" branch is currently unreachable in both environments —
+ * it is kept for rollback and for older deployments, and is documented as
+ * unverified rather than quietly assumed to work.
+ */
 export interface RagDocument {
   documentId: string;
   title: string;
@@ -9,6 +38,17 @@ export interface RagDocument {
   status: DocStatus;
   failureReason?: string;
   updatedAt: string;
+  /**
+   * Where a machine fetched this from, or null when a human uploaded it.
+   * Remote input — never becomes an `href` without `safeSourceUrl`'s protocol
+   * check (discovery.ts), because a `javascript:` URL in an href is script
+   * execution, not a link.
+   */
+  sourceUrl?: string | null;
+  /** The discovery channel, e.g. `"exa"`. Null on hand-uploaded rows. */
+  discoveredVia?: string | null;
+  /** The customer question the KB could not answer. Null on hand-uploaded rows. */
+  discoveryQuery?: string | null;
 }
 
 export interface RagDocumentDetail extends RagDocument {
@@ -79,6 +119,140 @@ export interface ReviewResponse {
    */
   conflictGate?: "inert" | "active";
   sourcePdfUrl: string;
+  /**
+   * A DRY RUN of the chunker. See ChunkPreview below — this is the only warning
+   * an operator will ever get that approving this document will silently drop
+   * part of it. Optional: a deployment predating c795d8a omits it entirely, and
+   * absent must render as "not measured", never as "nothing was dropped".
+   */
+  chunkPreview?: ChunkPreview;
+}
+
+// ── Chunk preview (ReviewResponse.chunkPreview) ──────────────────────────────
+//
+// WHY THIS IS A WARNING AND NOT A STAT.
+//
+// Chunking happens at APPROVE time, not at upload. The operator reads
+// `parsedText`, approves, and only THEN is the document cut into chunks and
+// embedded. The chunker is not lossless: it holds table blocks out of prose and
+// discards fragments below the retrieval floor. Until c795d8a both were visible
+// only in a server log line.
+//
+// So an operator can approve a clinical guideline and silently lose the table
+// that holds its numbers. The document reads as approved. The reference ranges
+// are simply not in the knowledge base, and nothing anywhere says so.
+//
+// The loss does not degrade to "I don't know" — it degrades to a confident
+// wrong answer. Verified live on dev 2026-08-10 by feeding a dropped fragment
+// back through POST /rag/search: the dropped passage was
+//   "Offer tests for thyroid dysfunction to adults, children and young people
+//    with: type 1 diabetes or other autoimmune diseases…"
+// and with it missing the KB's top hit at 0.742 is its inverse —
+//   "DO NOT offer testing for thyroid dysfunction solely because an adult,
+//    child or young person has type 2 diabetes."
+// A missing chunk is not an absence. It is a substitution.
+//
+// Live base rate 2026-08-10 — dropping is COMMON, not exceptional:
+//   DEV  3 of 7 documents dropped something (30, 5 and 2 passages).
+//   PROD 2 of 4 documents dropped something (4 and 1 passages).
+// Which is why the gate is sized to the loss instead of firing a fixed
+// ceremony every time (see DroppedContent.tsx).
+
+/**
+ * One passage the chunker will not store.
+ *
+ * ⚠️ `{text, words}` — THAT IS THE WHOLE PAYLOAD. There is no page, no offset,
+ * no reason, no type. Two different causes (table block held out of prose;
+ * fragment below the retrieval floor) produce byte-identical shapes, so the UI
+ * must never label a fragment with a reason or call one a table. Verified on
+ * every dropped row across both environments 2026-08-10: keys are exactly
+ * `["text", "words"]`.
+ */
+export interface DroppedFragment {
+  text: string;
+  /**
+   * The backend's own word count, or `null` when it did not send a usable one.
+   *
+   * ⚠️ NULL IS LOAD-BEARING — do not default it to 0. `coerceFragment` refuses
+   * to fabricate this precisely because a 0 would drag the "N words" total down
+   * and understate the size of the loss. An earlier revision then wrote
+   * `words: f.words ?? 0` one line later and threw that away, which rendered
+   * "Passage 3 · 0 words" and silently hid the retrieval probe (the probe is
+   * gated on length). Unreachable today — the backend always sends `words` —
+   * but the coercer exists for the day it doesn't.
+   */
+  words: number | null;
+  /**
+   * The server cut this text off at 200 characters.
+   *
+   * `rag-document.service.ts:1419` does `text: d.text.slice(0, 200)` with no
+   * ellipsis and no flag, so a truncated passage is indistinguishable from a
+   * complete one on the wire. Inferred client-side from the length. It matters
+   * because this component claims to render the passages VERBATIM and offers
+   * them for copy-paste re-ingestion — a silent truncation would make both
+   * claims false. Not observed live (longest fragment 2026-08-10 was 168 chars
+   * at 24 words), but the drop floor is 25 words and clinical vocabulary runs
+   * well over 8 chars/word, so it is reachable.
+   */
+  truncated: boolean;
+}
+
+/** One chunk that WILL be stored. Context only — `dropped` is the warning. */
+export interface ChunkSample {
+  source: string;
+  text: string;
+}
+
+/**
+ * `ReviewResponse.chunkPreview` — the chunker's own dry run of this document.
+ *
+ * ⚠️ THIS IS A DRY RUN OF THE CURRENT CHUNKER — NOT A READING OF WHAT IS STORED.
+ *
+ * The backend re-runs `chunkForPublish` over `parsedText` at READ time
+ * (`rag-document.service.ts:1363`). For an already-approved document that means
+ * the preview describes what approving it TODAY would produce, which is not
+ * necessarily what was produced when it actually was approved.
+ *
+ * An earlier revision of this comment claimed the arithmetic always agreed
+ * ("77/77, 28/28, 4/4, 66/66, 15/15, 9/9, 5/5"). That was wrong — the 15 was
+ * read from the preview, not from the stored row. Re-checked against
+ * `GET /rag/documents` on 2026-08-10:
+ *
+ *   PROD `IJMR-148-522 (1)` — stored chunkCount 12, preview chunkCount 15.
+ *
+ * Cause is in the backend's own comment at `rag-document.service.ts:1692` —
+ * every LlamaParse PDF used to fall through to the blind 500-word chunker
+ * ("Found in PRODUCTION"). That document's 12 stored chunks were cut by a
+ * chunker with no concept of dropping, while `dropped` describes a markdown
+ * chunking that has never run on it. Its one "dropped" passage is in fact
+ * retrievable from the live KB — `POST /rag/search` returns it verbatim at
+ * score 0.479, sourced to that same document.
+ *
+ * So the preview may only be spoken about in the PAST TENSE when
+ * `chunkPreview.chunkCount` equals the stored `chunkCount`. `describeDrop`
+ * takes the stored count for exactly this reason and degrades to a conditional
+ * when they diverge or when the stored count is unknown.
+ *
+ * ⚠️ `sample` is TRUNCATED — 3 entries returned for a 77-chunk document. The
+ * same object demonstrably caps its arrays, and there is no `droppedCount` to
+ * check `dropped` against. So the UI says "N passages listed", never
+ * "N passages were dropped", and never "these are all of them".
+ */
+export interface ChunkPreview {
+  /** Chunks this document WILL produce. Meaningless when `error` is set. */
+  chunkCount: number;
+  /** ⚠️ The warning. Passages that will be in the document and NOT in the KB. */
+  dropped: DroppedFragment[];
+  /** Examples of what WILL be stored. Context, not a warning. */
+  sample: ChunkSample[];
+  /**
+   * Set when the preview itself failed to run. `null` on the happy path —
+   * which means the field being PRESENT AND NULL is a successful check, and is
+   * a completely different fact from the whole `chunkPreview` object being
+   * absent. `error != null` means nothing was measured: it must read like "not
+   * measured", never like "clean".
+   */
+  error: string | null;
 }
 
 export interface BulkUploadAccepted {

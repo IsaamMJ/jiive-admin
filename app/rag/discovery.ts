@@ -9,32 +9,128 @@
  */
 
 import api from "@/lib/api";
-import type { DiscoveredDocument, DiscoverRunResponse, DocStatus } from "./types";
+import type { DiscoveredDocument, DiscoverRunResponse, DocStatus, RagDocument } from "./types";
+
+// ── Provenance: who put this document in the knowledge base ──────────────────
+//
+// ✅ THE ID-SET WORKAROUND IS GONE (removed 2026-08-10).
+//
+// It used to fetch `/rag/discovered`, build a Set of its `documentId`s and
+// subtract that from the main list, because `GET /rag/documents` returned only
+// `{documentId, title, chunkCount, status, updatedAt}` and a discovered row was
+// byte-for-byte indistinguishable from an uploaded one.
+//
+// Backend c795d8a puts `sourceUrl` / `discoveredVia` / `discoveryQuery` on the
+// row itself, so the split is now made from the row. Two real bugs die with the
+// workaround:
+//   1. It depended on a second request, so a failed `/rag/discovered` meant no
+//      split at all.
+//   2. `/rag/documents` is capped at 500 (DOCS_LIST_CAP), so a discovered
+//      document sitting outside that window could never be matched.
+//
+// ⚠️ DEV / PROD ASYMMETRY — DELETE THE `unknown` BRANCH WHEN THIS IS SETTLED.
+//
+// Verified live 2026-08-10 against BOTH environments. Contrary to the earlier
+// handoff, prod is NOT behind here — all three keys are present in both:
+//   DEV  (jiive-dev.isaam.dev)  7 rows. 3 carry sourceUrl +
+//        discoveredVia:"exa" + discoveryQuery:"tsh"; the other 4 carry all
+//        three keys with explicit null.
+//   PROD (d3pvjhguhk37b0…)      4 rows. All four carry the keys, all null.
+// Cross-check: the ids the old id-Set produced on dev
+//   {7dc4d16f…, 7e8c4baf…, b7a896b5…}
+// are exactly the ids with a non-null `sourceUrl`, and on prod both methods
+// yield the empty set. The replacement is behaviour-identical in both
+// environments and costs one fewer request.
+//
+// The `unknown` branch below therefore describes a deployment that predates
+// c795d8a — a rollback, or a third environment. It is currently unreachable and
+// has never been observed; it exists so that a rollback degrades honestly
+// instead of silently presenting machine-fetched clinical content as something
+// a human chose to upload. Delete it once a rollback is impossible.
 
 /**
- * ⚠️ WORKAROUND — DELETE WHEN THE BACKEND ADDS A SERVER-SIDE FLAG.
+ * What the row says about its own origin.
  *
- * The handoff says: *"everything discovered has a non-null `sourceUrl`"*, so we
- * could filter the main list on that field. **That is not possible.**
- * `GET /rag/documents` does not return `sourceUrl` at all. Verified live on dev
- * 2026-08-09 — the full row shape is:
- *
- *     { documentId, title, chunkCount, status, updatedAt }
- *
- * All three dev discovered documents appear in that list and are byte-for-byte
- * indistinguishable from an uploaded `pending_review` row.
- *
- * So the partition is done client-side by id: fetch `/rag/discovered`, build a
- * Set of its `documentId`s, and subtract. This costs one extra request and is
- * only correct while that request succeeds — which is why the caller must NOT
- * partition when the discovered fetch failed (a silently unfiltered list that
- * looks filtered is worse than an honestly unfiltered one).
- *
- * Ask the backend for `discoveredVia` / `sourceUrl` on `/rag/documents`, then
- * delete this whole mechanism.
+ * `unknown` is a first-class variant and NOT merged into `uploaded`. Those are
+ * different facts:
+ *   unknown  → this server cannot tell us where the document came from.
+ *   uploaded → this server checked, and a human put it here.
+ * Collapsing them turns "we don't know" into "a human chose this", which is the
+ * exact shape of the bug this whole module guards against.
  */
-export const DISCOVERED_PARTITION_NOTE =
-  "The server doesn't mark which documents were auto-discovered, so this split is made in the browser by matching IDs against the Discovered queue.";
+export type Provenance =
+  | { kind: "unknown" }
+  | { kind: "uploaded" }
+  | { kind: "discovered"; sourceUrl: string; via: string | null; query: string | null };
+
+/**
+ * Read one row's provenance.
+ *
+ * Distinguishes an ABSENT key from a PRESENT-BUT-NULL value, which is the only
+ * way to tell "the server has no opinion" from "the server says a human
+ * uploaded it". `in` is deliberate — `doc.sourceUrl == null` cannot see the
+ * difference and would silently answer the wrong question.
+ */
+export function readProvenance(doc: RagDocument): Provenance {
+  const hasField = "sourceUrl" in doc || "discoveredVia" in doc;
+  if (!hasField) return { kind: "unknown" };
+  const sourceUrl = typeof doc.sourceUrl === "string" && doc.sourceUrl.trim() !== "" ? doc.sourceUrl : null;
+  const via = typeof doc.discoveredVia === "string" && doc.discoveredVia.trim() !== "" ? doc.discoveredVia : null;
+  // Either signal is enough to call it machine-found. Requiring both would let a
+  // row with a sourceUrl but no channel fall through into "uploaded", which is
+  // the reassuring reading and therefore the wrong default.
+  if (!sourceUrl && !via) return { kind: "uploaded" };
+  return {
+    kind: "discovered",
+    // A discovered row with no usable URL still gets rendered as discovered; the
+    // row-level UI says the publisher is unreadable rather than dropping the
+    // provenance entirely.
+    sourceUrl: sourceUrl ?? "",
+    via,
+    query: typeof doc.discoveryQuery === "string" && doc.discoveryQuery.trim() !== "" ? doc.discoveryQuery : null,
+  };
+}
+
+/**
+ * The split of the main documents list.
+ *
+ * `available: false` means this server does not mark provenance at all, so the
+ * split CANNOT be made. In that case `uploaded` holds every row unfiltered —
+ * and the caller must say so on screen. A list that looks filtered but isn't is
+ * strictly worse than an honestly unfiltered one, because it quietly presents
+ * clinical content nobody has read as something a human selected.
+ */
+export interface DocPartition {
+  available: boolean;
+  uploaded: RagDocument[];
+  discovered: RagDocument[];
+}
+
+export function partitionDocs(docs: RagDocument[]): DocPartition {
+  // An empty list needs no capability claim: there is nothing hidden either way,
+  // so this is reported as available with two empty lists rather than as a
+  // failure the operator has to interpret.
+  if (docs.length === 0) return { available: true, uploaded: [], discovered: [] };
+  // One row carrying the field proves the server sends it. Probing "any row"
+  // rather than "every row" matters because the backend omits nothing per-row —
+  // it either has the columns or it doesn't.
+  const available = docs.some((d) => "sourceUrl" in d || "discoveredVia" in d);
+  if (!available) return { available: false, uploaded: docs, discovered: [] };
+  const uploaded: RagDocument[] = [];
+  const discovered: RagDocument[] = [];
+  for (const doc of docs) {
+    (readProvenance(doc).kind === "discovered" ? discovered : uploaded).push(doc);
+  }
+  return { available: true, uploaded, discovered };
+}
+
+/** Shown next to the split so the mechanism is never a mystery. */
+export const PARTITION_NOTE =
+  "The server now stamps each document with where it came from, so this split is read straight off the row rather than guessed in the browser.";
+
+/** Shown INSTEAD of the split when the server doesn't stamp provenance. */
+export const PARTITION_UNAVAILABLE_NOTE =
+  "This server doesn't record where a document came from, so uploaded and auto-discovered documents cannot be told apart. Everything is listed together below — treat any row as possibly machine-fetched and unread.";
 
 /** The literal the backend uses when a publication date could not be established. */
 const SOURCE_DATE_UNKNOWN = "unknown";
@@ -235,4 +331,56 @@ export async function runDiscovery(): Promise<DiscoverOutcome> {
     }
     return { kind: "error", message: serverMessage(err, "The search could not be run.") };
   }
+}
+
+// ── The discovered queue is a PROVENANCE list, not a review queue ────────────
+
+/**
+ * Split the discovered rows by whether a human still has to look at them.
+ *
+ * ⚠️ `GET /rag/discovered` HAS NO STATUS FILTER. `listDiscovered`
+ * (`jiive-backend/src/modules/rag/rag-document.service.ts:641-654`) selects on
+ * `discoveredVia IS NOT NULL` and nothing else, so an approved document stays in
+ * this list forever. It answers "what did a machine put here", not "what is
+ * waiting for you".
+ *
+ * The page treated `discovered.length` as the waiting count, and every aggregate
+ * on the screen inherited it. Live on DEV 2026-08-10, `/rag/discovered` returned
+ * three rows, ALL `status: "ready"` — 77, 28 and 4 chunks, long since approved
+ * and live in the knowledge base — and the UI said:
+ *
+ *   "3 auto-discovered documents waiting … Nobody has read them yet."
+ *   "Nobody has read these. … Read each one before approving it"
+ *   an amber tab badge reading 3
+ *
+ * Zero documents were unread. The row-level status pill told the truth, so a
+ * careful reader could tell; no aggregate on the page could. That is a counter
+ * that is permanently wrong in the alarming direction, which is worse than one
+ * that is absent: when a genuinely unread document does arrive it shows as 3→4
+ * on a number the operator has already been trained to ignore — the exact
+ * failure this queue exists to prevent.
+ *
+ * The LIST is deliberately not filtered. Those approved rows are the record of
+ * what a machine put into the knowledge base without anyone reading it, and that
+ * record is the point. Only the counts and the wording change.
+ */
+export interface DiscoveredCounts {
+  /** Awaiting a human decision. The only number that may be called "waiting". */
+  awaiting: number;
+  /** Already approved and live in the KB. Nothing to do. */
+  approved: number;
+  /** Still being parsed, or failed. Not actionable yet, and not read either. */
+  notReady: number;
+}
+
+export function countDiscovered(docs: Array<{ status: string }>): DiscoveredCounts {
+  let awaiting = 0;
+  let approved = 0;
+  let notReady = 0;
+  for (const d of docs) {
+    if (d.status === "pending_review") awaiting++;
+    else if (d.status === "ready") approved++;
+    else notReady++;
+  }
+  return { awaiting, approved, notReady };
 }

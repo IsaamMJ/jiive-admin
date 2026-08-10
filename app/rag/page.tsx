@@ -4,12 +4,30 @@ export const dynamic = "force-dynamic";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Trash2, Eye, CheckCircle, Upload, AlertTriangle, Files } from "lucide-react";
+import { Loader2, Trash2, Eye, CheckCircle, Upload, AlertTriangle, Files, Bot } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { ConvertPanel } from "./ConvertPanel";
 import { DiscoveredPanel } from "./DiscoveredPanel";
 import { StatusBadge } from "./StatusBadge";
-import { DISCOVERED_PARTITION_NOTE, fetchDiscovered, isSourceDateUnknown } from "./discovery";
+import {
+  PARTITION_NOTE,
+  PARTITION_UNAVAILABLE_NOTE,
+  countDiscovered,
+  fetchDiscovered,
+  isSourceDateUnknown,
+  partitionDocs,
+  publisherDomain,
+  readProvenance,
+} from "./discovery";
+import { DropStatusLine, DroppedContent } from "./DroppedContent";
+import { NotCheckedPanel, type NotCheckedItem } from "./NotCheckedPanel";
+import {
+  NOT_CHECKED_CONFLICTS,
+  NOT_CHECKED_DROPPED_ABSENT,
+  NOT_CHECKED_DROPPED_MALFORMED,
+  blocksApproval,
+  describeDrop,
+} from "./chunkPreview";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -146,6 +164,68 @@ function SourceDateField({
   );
 }
 
+/**
+ * Where one document came from, in the main list.
+ *
+ * A document's provenance now travels with the row, so an operator scanning the
+ * list can tell at a glance which rows a MACHINE found off the internet and
+ * which a human chose to upload. That distinction is the difference between
+ * "someone vetted this" and "nobody has ever read this", and it stops being
+ * visible the moment a discovered row shares a table with an uploaded one —
+ * which is exactly what happens on a server that doesn't stamp provenance.
+ *
+ * Three renders for three facts, and "unknown" is NOT folded into "uploaded":
+ *   discovered → publisher domain (the real trust signal — `nice.org.uk` says
+ *                more than 60 characters of URL) + the customer question.
+ *   uploaded   → a quiet dash. The server checked and a human put it here.
+ *   unknown    → an explicit "not recorded", never a dash. A blank cell would
+ *                read as "a human uploaded it", which is the reassuring reading
+ *                of a fact we do not have.
+ *
+ * Kept to one line — the Discovered tab remains the review surface.
+ */
+function ProvenanceCell({ doc }: { doc: RagDocument }) {
+  const p = readProvenance(doc);
+
+  if (p.kind === "unknown") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400">
+        Not recorded
+        <InfoTip label="This server doesn't say where the document came from, so we can't tell you whether a person chose it or a machine fetched it off the internet. Blank would have implied a person did." />
+      </span>
+    );
+  }
+
+  if (p.kind === "uploaded") {
+    return <span className="text-[11px] text-muted-foreground">Uploaded</span>;
+  }
+
+  const domain = publisherDomain(p.sourceUrl);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-medium text-amber-700 dark:text-amber-400">
+        <Bot size={10} />
+        Auto-found
+      </span>
+      {domain ? (
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-foreground">
+          {domain}
+        </span>
+      ) : (
+        // Unparseable or non-http(s). We will not name a publisher we can't read.
+        <span className="text-amber-700 dark:text-amber-400">Publisher unreadable</span>
+      )}
+      <InfoTip
+        label={
+          p.query
+            ? `A machine fetched this${p.via ? ` via ${p.via}` : ""} because customers asked about "${p.query}" and the knowledge base had no answer. Nobody chose it.`
+            : `A machine fetched this${p.via ? ` via ${p.via}` : ""} off the internet. There is no record of which customer question triggered it. Nobody chose it.`
+        }
+      />
+    </span>
+  );
+}
+
 function BatchStatusBadge({ status, failureReason }: { status: BatchDocStatus; failureReason?: string }) {
   const variants: Record<BatchDocStatus, { label: string; className: string }> = {
     uploaded: { label: "Uploaded", className: "border-border bg-muted text-muted-foreground" },
@@ -229,6 +309,13 @@ export default function KnowledgeBasePage() {
   const [tablesReviewed, setTablesReviewed] = useState(false);
   // F5: conflict acknowledgment gate
   const [conflictsAck, setConflictsAck] = useState(false);
+  // Dropped-content gate. `droppedExpanded` is lifted rather than kept inside
+  // DroppedContent because the acknowledgement can't arm until the whole list
+  // has been shown, so the approve button has to be able to see it.
+  // ⚠️ Both MUST be reset in closeReview() and openReview() — a stale `true`
+  // would silently unlock Approve on the next document.
+  const [droppedAck, setDroppedAck] = useState(false);
+  const [droppedExpanded, setDroppedExpanded] = useState(false);
   const [sourceDate, setSourceDate] = useState("");
   // PDF blob URL for forced_side_by_side — use ref for cleanup, state for render
   const pdfObjectUrlRef = useRef<string | null>(null);
@@ -270,6 +357,8 @@ export default function KnowledgeBasePage() {
     setReviewDoc(null);
     setTablesReviewed(false);
     setConflictsAck(false);
+    setDroppedAck(false);
+    setDroppedExpanded(false);
     setSourceDate("");
     setPdfLoading(false);
     revokePdf();
@@ -556,6 +645,8 @@ export default function KnowledgeBasePage() {
     setReviewDoc(null);
     setTablesReviewed(false);
     setConflictsAck(false);
+    setDroppedAck(false);
+    setDroppedExpanded(false);
     setSourceDate("");
     setPdfLoading(false);
     revokePdf();
@@ -605,6 +696,12 @@ export default function KnowledgeBasePage() {
     if (reviewDoc.reviewMode === "forced_side_by_side" && !tablesReviewed) return;
     // F5: conflict acknowledgment gate
     if ((conflicts ?? []).length > 0 && !conflictsAck) return;
+    // Dropped-content gate. Defence in depth on the same footing as the two
+    // above — but note this one is CLIENT-ONLY: there is no
+    // `dropped_not_acknowledged` server error code to mirror
+    // `tables_not_reviewed` / `conflicts_not_acknowledged`, so this guards
+    // against a stale render, not against a determined caller.
+    if (droppedBlocking && !droppedAck) return;
     if (approvingRef.current) return;
     approvingRef.current = true;
     setApproving(true);
@@ -616,6 +713,27 @@ export default function KnowledgeBasePage() {
       const r = await api.post<ApproveResponse>(`/rag/documents/${reviewDoc.documentId}/approve`, body);
       const vid = r.data.versionId ? r.data.versionId.slice(0, 8) : "updated";
       toast.success(`Document approved — now live (KB version ${vid}).`);
+      // Reconcile the preview against reality. `chunkPreview.chunkCount` was a
+      // PREDICTION made before the chunks existed; `ApproveResponse.chunkCount`
+      // is what was actually stored.
+      //
+      // ⚠️ An earlier comment here claimed these two always agreed in the wild
+      // ("77/77 … 15/15 …"). That was read from previews, not from stored rows.
+      // Re-checked against `GET /rag/documents` on 2026-08-10: PROD
+      // `IJMR-148-522 (1)` stores 12 chunks and previews 15. So divergence is
+      // not hypothetical, it is the live state of a production document — which
+      // is exactly why this toast has to fire and why `describeDrop` now takes
+      // the stored count before it will speak about the loss in the past tense.
+      if (
+        previewChunkCount !== null &&
+        typeof r.data.chunkCount === "number" &&
+        r.data.chunkCount !== previewChunkCount
+      ) {
+        toast.warning(
+          `Approved, but ${r.data.chunkCount} chunks were stored where the preview said ${previewChunkCount}. What you reviewed is not exactly what was stored.`,
+          { duration: 12_000 }
+        );
+      }
       // Refresh batch data if we're in a batch session.
       if (batchData?.batchId) {
         api.get<BatchResponse>(`/rag/batches/${batchData.batchId}`)
@@ -672,25 +790,62 @@ export default function KnowledgeBasePage() {
 
   /**
    * Partition the main list so uploaded and auto-discovered documents aren't
-   * silently mixed. See DISCOVERED_PARTITION_NOTE in discovery.ts for why this
-   * is done by id rather than by the `sourceUrl` the handoff suggested.
+   * silently mixed.
    *
-   * The partition is applied ONLY when the discovered fetch actually succeeded.
-   * If it failed we show the unfiltered list and say so: a list that looks
-   * filtered but isn't would quietly present machine-fetched clinical content as
-   * something a human uploaded.
+   * Read straight off the row now (`sourceUrl` / `discoveredVia`) — the old
+   * id-Set-against-/rag/discovered workaround is deleted. See the provenance
+   * block in discovery.ts for the dev/prod verification and for why the
+   * "server doesn't mark provenance" case is a NAMED variant rather than a
+   * silent fall-through to an unfiltered list.
+   *
+   * This no longer depends on the discovered fetch succeeding, and it no longer
+   * misses a discovered document that sits outside the 500-row window.
    */
-  const discoveredPartitionApplied =
-    !discoveredLoading && discoveredError === null && !discoveredUnavailable;
-  const discoveredIds = new Set(discovered.map((d) => d.documentId));
-  const uploadedDocs = discoveredPartitionApplied
-    ? docs.filter((d) => !discoveredIds.has(d.documentId))
-    : docs;
-  // How many rows the split actually removed from the visible list. Not the same
-  // as `discovered.length`: the docs list is capped at 500 and a discovered
-  // document could sit outside it, so stating the queue size here would be a
-  // claim about a list we can't see all of.
-  const hiddenDiscoveredCount = docs.length - uploadedDocs.length;
+  const partition = partitionDocs(docs);
+  const partitionAvailable = partition.available;
+  const uploadedDocs = partition.uploaded;
+  // How many rows the split moved out of the visible list. Counted from the same
+  // array that is being rendered, so it can never describe rows we can't see —
+  // `discovered.length` (the separate queue endpoint) is a different population.
+  const hiddenDiscoveredCount = partition.discovered.length;
+
+  /**
+   * The rows the split moved out, shaped for the Discovered panel, used only if
+   * `/rag/discovered` itself is down. Without this a discovered document would
+   * be partitioned out of Documents and have nowhere to appear — see the
+   * `fallbackDocs` comment in DiscoveredPanel.
+   *
+   * `sourceDate: null` is the truth here: `/rag/documents` doesn't carry one, so
+   * the row renders "Publication date unknown", which describes what we know
+   * rather than what the publisher said.
+   */
+  const discoveredFallback: DiscoveredDocument[] = partition.discovered.map((d) => {
+    const p = readProvenance(d);
+    return {
+      documentId: d.documentId,
+      title: d.title,
+      status: d.status,
+      sourceUrl: p.kind === "discovered" ? p.sourceUrl : "",
+      sourceDate: null,
+      discoveryQuery: p.kind === "discovered" ? p.query : null,
+      chunkCount: d.chunkCount,
+      updatedAt: d.updatedAt,
+    };
+  });
+
+  /**
+   * Awaiting / approved / not-ready across the discovered queue.
+   *
+   * Every aggregate about this queue reads from here. `discovered.length` is
+   * the number of rows the endpoint returned, which includes documents approved
+   * months ago — see countDiscovered for what that cost live on dev.
+   *
+   * Falls back to the partition when the queue endpoint is down, so the counts
+   * describe the rows actually on screen rather than going silent.
+   */
+  const discoveredCounts = countDiscovered(
+    discovered.length > 0 || !discoveredFallback.length ? discovered : discoveredFallback
+  );
 
   const isForcedSBS = reviewDoc?.reviewMode === "forced_side_by_side";
   // The server told us it has no publication date for this document (literally
@@ -703,6 +858,88 @@ export default function KnowledgeBasePage() {
   // gate is inert (no marker dictionary) `numericConflicts: []` means "not
   // checked" — showing nothing would read as "checked, clean".
   const conflictGateInert = reviewDoc?.conflictGate === "inert";
+
+  /**
+   * What approving this document will throw away. A NAMED verdict, never a
+   * `?.length` at the render site — see chunkPreview.ts for why `dropped: []`
+   * and `chunkPreview: undefined` must not be allowed to share a branch.
+   */
+  /**
+   * What is ACTUALLY stored for this document, from the list row.
+   *
+   * `chunkPreview` is a dry run of the current chunker, re-executed when the
+   * review is fetched — it is not a reading of the KB. Without this number the
+   * dialog cannot tell "the preview describes the stored chunking" from "the
+   * preview describes a chunking that never ran on this document", and it used
+   * to assert the former unconditionally. On PROD `IJMR-148-522 (1)` that is 12
+   * stored against 15 previewed, and the passage it named as missing is
+   * retrievable from the live KB.
+   *
+   * Null when the row isn't in the current page of `docs` (batch review, or a
+   * filtered list) — which `describeDrop` treats as "cannot confirm", not as a
+   * match. Never fall back to `chunkPreview.chunkCount` here: that would
+   * compare the preview against itself and always agree.
+   */
+  const storedChunkCount =
+    docs.find((d) => d.documentId === reviewDoc?.documentId)?.chunkCount ?? null;
+
+  const dropVerdict = describeDrop(reviewDoc, storedChunkCount);
+  const droppedBlocking = blocksApproval(dropVerdict);
+  /**
+   * The chunk count the preview PREDICTED, or null when nothing was measured.
+   * `-1` is the coercer's marker for "the field wasn't a usable number" and is
+   * mapped back to null here so it can never be compared against a real count.
+   */
+  const previewChunkCount =
+    dropVerdict.kind === "clear" || dropVerdict.kind === "unconfirmed_clear" || dropVerdict.kind === "loss"
+      ? dropVerdict.chunkCount >= 0
+        ? dropVerdict.chunkCount
+        : null
+      : null;
+
+  /**
+   * Checks that did not run, merged into ONE amber panel.
+   *
+   * `conflictGateInert` used to be its own card, duplicated in both review
+   * modes. Adding chunk-preview-absent as a second card would put two amber
+   * panels on every document a weaker backend serves — the fatigue trap. One
+   * panel, one heading, one list.
+   */
+  const notCheckedItems: NotCheckedItem[] = [];
+  if (conflictGateInert) {
+    notCheckedItems.push({ name: "Numeric conflicts", meaning: NOT_CHECKED_CONFLICTS });
+  }
+  if (dropVerdict.kind === "unmeasured") {
+    notCheckedItems.push({
+      name: "Dropped content",
+      meaning:
+        dropVerdict.why === "absent" ? NOT_CHECKED_DROPPED_ABSENT : NOT_CHECKED_DROPPED_MALFORMED,
+    });
+  } else if (dropVerdict.kind === "preview_failed") {
+    notCheckedItems.push({
+      name: "Dropped content",
+      // Server message verbatim — never a paraphrase (BUILD-CHECKLIST #5).
+      meaning: `The server tried to preview chunking and it failed, so nothing was measured. Server said: ${dropVerdict.message}`,
+    });
+  }
+
+  /**
+   * Every unmet approve gate, not just the first.
+   *
+   * The old single `title` ternary named only the first blocker, which with
+   * three possible gates reads as a moving target. These are rendered as
+   * VISIBLE text under the button as well as in `title` — `title` does not
+   * exist on touch, and BUILD-CHECKLIST #4 requires a disabled submit to show
+   * why it is disabled.
+   */
+  const approveBlockers: string[] = [];
+  if (isForcedSBS && !tablesReviewed) approveBlockers.push("confirm you checked the tables against the source");
+  if (conflicts.length > 0 && !conflictsAck)
+    approveBlockers.push(`acknowledge the ${conflicts.length} numeric conflict${conflicts.length !== 1 ? "s" : ""}`);
+  if (droppedBlocking && !droppedAck) {
+    const n = dropVerdict.kind === "loss" ? dropVerdict.fragments.length : 0;
+    approveBlockers.push(`read the ${n} passage${n !== 1 ? "s" : ""} that won't be stored`);
+  }
 
   // Paste-text local validation (approximation of server gates — see MAX/MIN_PASTE_* above).
   const pasteTextTrimmed = pasteText.trim();
@@ -733,7 +970,11 @@ export default function KnowledgeBasePage() {
             something is actually waiting, say so at the top and jump to it.
             Rendered only when the count is KNOWN and non-zero: no banner is not
             a claim that the queue is empty. */}
-        {!discoveredLoading && !discoveredError && !discoveredUnavailable && discovered.length > 0 && (
+        {/* Gated on `awaiting`, NOT on `discovered.length` — see countDiscovered.
+            The endpoint keeps approved rows forever, so the old test made this
+            banner permanent on dev and its "Nobody has read them yet" a standing
+            falsehood about three documents that are live in the KB. */}
+        {!discoveredLoading && !discoveredError && !discoveredUnavailable && discoveredCounts.awaiting > 0 && (
           <button
             type="button"
             onClick={() => {
@@ -745,9 +986,11 @@ export default function KnowledgeBasePage() {
             <AlertTriangle size={13} className="shrink-0" />
             <span>
               <strong>
-                {discovered.length} auto-discovered document{discovered.length !== 1 ? "s" : ""} waiting
+                {discoveredCounts.awaiting} auto-discovered document
+                {discoveredCounts.awaiting !== 1 ? "s" : ""} waiting for review
               </strong>{" "}
-              — fetched from the internet for questions customers asked. Nobody has read them yet.
+              — fetched from the internet for questions customers asked. Nobody has read{" "}
+              {discoveredCounts.awaiting !== 1 ? "them" : "it"} yet.
             </span>
             <span className="ml-auto shrink-0 font-medium underline underline-offset-2">Review</span>
           </button>
@@ -1104,14 +1347,24 @@ export default function KnowledgeBasePage() {
                       while loading — or after the fetch failed — would read as
                       "nothing is waiting", which is a claim we can't make. */}
                   {!discoveredLoading && !discoveredError && !discoveredUnavailable && (
+                    /* Badges the AWAITING count, not the row count. An amber
+                       badge is a call to action; on dev it read "3" for three
+                       already-approved documents, permanently. Neutral grey
+                       still shows the total so the tab isn't silent about
+                       having contents. */
                     <span
                       className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
-                        discovered.length > 0
+                        discoveredCounts.awaiting > 0
                           ? "bg-amber-500/20 text-amber-700 dark:text-amber-400"
                           : "bg-muted text-muted-foreground"
                       }`}
+                      title={
+                        discoveredCounts.awaiting > 0
+                          ? `${discoveredCounts.awaiting} waiting for review`
+                          : `${discovered.length} auto-discovered, none waiting for review`
+                      }
                     >
-                      {discovered.length}
+                      {discoveredCounts.awaiting > 0 ? discoveredCounts.awaiting : discovered.length}
                     </span>
                   )}
                 </TabsTrigger>
@@ -1140,12 +1393,14 @@ export default function KnowledgeBasePage() {
               unavailable={discoveredUnavailable}
               onReview={openReview}
               onRefresh={() => { refreshDiscovered(); fetchDocs(); }}
+              fallbackDocs={discoveredFallback}
             />
           ) : (
           <>
-          {/* The split is never silent: say what was moved out, or say the split
-              couldn't be made. See DISCOVERED_PARTITION_NOTE. */}
-          {!docsLoading && discoveredPartitionApplied && hiddenDiscoveredCount > 0 && (
+          {/* The split is never silent: say what was moved out, or say plainly
+              that the split could not be made. See the provenance block in
+              discovery.ts. */}
+          {!docsLoading && partitionAvailable && hiddenDiscoveredCount > 0 && (
             <p className="text-xs text-muted-foreground">
               {hiddenDiscoveredCount} auto-discovered document
               {hiddenDiscoveredCount !== 1 ? "s are" : " is"} listed under{" "}
@@ -1156,14 +1411,16 @@ export default function KnowledgeBasePage() {
               >
                 Discovered
               </button>
-              , not here. <InfoTip label={DISCOVERED_PARTITION_NOTE} />
+              , not here. <InfoTip label={PARTITION_NOTE} />
             </p>
           )}
-          {!docsLoading && !discoveredLoading && !discoveredPartitionApplied && !discoveredUnavailable && (
+          {/* This server doesn't stamp provenance, so the list below is
+              UNFILTERED and we say so rather than let it look filtered. */}
+          {!docsLoading && !partitionAvailable && (
             <p className="inline-flex flex-wrap items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-400">
               <AlertTriangle size={12} className="shrink-0" />
-              The discovered queue couldn&apos;t be loaded, so this list may include
-              auto-discovered documents that nobody has read.
+              Uploaded and auto-discovered documents can&apos;t be told apart here.
+              <InfoTip label={PARTITION_UNAVAILABLE_NOTE} />
             </p>
           )}
 
@@ -1177,6 +1434,7 @@ export default function KnowledgeBasePage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Title</TableHead>
+                    <TableHead>Source</TableHead>
                     <TableHead className="text-right">Chunks</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Updated</TableHead>
@@ -1187,6 +1445,7 @@ export default function KnowledgeBasePage() {
                   {uploadedDocs.map((doc) => (
                     <TableRow key={doc.documentId}>
                       <TableCell className="font-medium max-w-xs truncate">{doc.title}</TableCell>
+                      <TableCell><ProvenanceCell doc={doc} /></TableCell>
                       <TableCell className="text-right tabular-nums">{doc.chunkCount}</TableCell>
                       <TableCell>
                         <StatusBadge status={doc.status} failureReason={doc.failureReason} />
@@ -1220,13 +1479,14 @@ export default function KnowledgeBasePage() {
                   ))}
                   {uploadedDocs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                         {/* "You haven't uploaded anything" ≠ "the knowledge base is
                             empty" once discovered documents have been split out. */}
                         {hiddenDiscoveredCount > 0
                           ? "Nothing uploaded by hand — every document here was auto-discovered. See the Discovered tab."
                           : "No documents yet — upload a PDF to get started."}
                       </TableCell>
+                      {/* colSpan tracks the header — Source added a sixth column. */}
                     </TableRow>
                   )}
                 </TableBody>
@@ -1275,27 +1535,57 @@ export default function KnowledgeBasePage() {
           ) : reviewDoc ? (
             isForcedSBS ? (
               /* ── Forced side-by-side: two-pane ─────────────────────────── */
-              <div className="flex flex-1 gap-4 overflow-hidden min-h-0">
+              /* `flex-col md:flex-row` — a 50/50 split of a 375px viewport gave
+                  neither the PDF nor the review pane a usable width. Below md the
+                  panes stack, PDF first, each with its own height. */
+              <div className="flex flex-1 flex-col gap-4 overflow-hidden min-h-0 md:flex-row">
                 {/* Left pane: source PDF (authenticated blob) */}
-                <div className="flex-1 min-w-0 flex flex-col gap-1 overflow-hidden">
+                <div className="flex min-w-0 shrink-0 flex-col gap-1 overflow-hidden md:flex-1 md:shrink">
                   <p className="text-xs font-medium text-muted-foreground shrink-0">Source PDF</p>
                   {pdfLoading ? (
-                    <Skeleton className="flex-1" />
+                    <Skeleton className="h-[45vh] md:h-auto md:flex-1" />
                   ) : pdfObjectUrl ? (
                     <iframe
                       src={pdfObjectUrl}
                       title="Source PDF"
-                      className="flex-1 w-full h-full rounded border"
+                      className="h-[45vh] w-full rounded border md:h-auto md:flex-1"
                     />
                   ) : (
-                    <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground rounded border border-dashed">
+                    <div className="flex h-[45vh] items-center justify-center rounded border border-dashed text-sm text-muted-foreground md:h-auto md:flex-1">
                       PDF could not be loaded
                     </div>
                   )}
                 </div>
 
-                {/* Right pane: checkbox + conflicts + tables + text + source date */}
-                <div className="flex-1 min-w-0 flex flex-col gap-4 overflow-auto">
+                {/* Right pane: gates + conflicts + tables + text + source date.
+                    ORDER IS DELIBERATE and identical in both review modes:
+                      1. checks that did not run   (what we don't know)
+                      2. dropped content           (what will be GONE)
+                      3. numeric conflicts         (what may be WRONG)
+                      4. tables-reviewed checkbox
+                      5. tables · parsedText · source date
+                    Dropped sits above conflicts because a wrong number is
+                    visible in the text below and a missing one is not — gone is
+                    the only failure the operator cannot detect by reading. */}
+                <div className="flex flex-1 min-w-0 flex-col gap-4 overflow-auto">
+                  {/* One panel for every check that didn't run — see NotCheckedPanel. */}
+                  <NotCheckedPanel items={notCheckedItems} />
+
+                  {/* ⚠️ What approving this will throw away. */}
+                  <DroppedContent
+                    // Fresh internal state (per-passage expansion, probe results)
+                    // for every document — a probe result must never be shown
+                    // against a different document's passage.
+                    key={reviewDoc.documentId}
+                    verdict={dropVerdict}
+                    tableCount={tables.length}
+                    ack={droppedAck}
+                    onAck={setDroppedAck}
+                    expanded={droppedExpanded}
+                    onExpand={() => setDroppedExpanded(true)}
+                    disabled={approving}
+                  />
+
                   {/* Required checkbox gate */}
                   <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-amber-300 bg-amber-50 p-3">
                     <input
@@ -1309,20 +1599,6 @@ export default function KnowledgeBasePage() {
                       I{"'"}ve checked the tables against the source
                     </span>
                   </label>
-
-                  {/* Conflict check didn't run — silence here is not a pass */}
-                  {conflictGateInert && (
-                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
-                      <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
-                        Numeric conflict check did not run
-                      </p>
-                      <p className="mt-1 text-[11px] text-muted-foreground">
-                        No marker dictionary is loaded, so this document was <strong>not</strong> checked
-                        against existing values. An empty conflict list here means &ldquo;not
-                        checked&rdquo;, not &ldquo;clean&rdquo; — verify any numbers yourself.
-                      </p>
-                    </div>
-                  )}
 
                   {/* Numeric conflicts (prominent) */}
                   {conflicts.length > 0 && (
@@ -1403,19 +1679,23 @@ export default function KnowledgeBasePage() {
             ) : (
               /* ── Standard mode: single pane ─────────────────────────────── */
               <div className="flex-1 overflow-auto flex flex-col gap-4 min-h-0">
-                {/* Conflict check didn't run — silence here is not a pass */}
-                {conflictGateInert && (
-                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
-                    <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
-                      Numeric conflict check did not run
-                    </p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">
-                      No marker dictionary is loaded, so this document was <strong>not</strong> checked
-                      against existing values. An empty conflict list here means &ldquo;not
-                      checked&rdquo;, not &ldquo;clean&rdquo; — verify any numbers yourself.
-                    </p>
-                  </div>
-                )}
+                {/* Same order as the side-by-side pane above — see the comment
+                    there. Both modes render the SAME two components, so the copy
+                    cannot drift between them the way every other block in this
+                    dialog has. */}
+                <NotCheckedPanel items={notCheckedItems} />
+
+                {/* ⚠️ What approving this will throw away. */}
+                <DroppedContent
+                  key={reviewDoc.documentId}
+                  verdict={dropVerdict}
+                  tableCount={tables.length}
+                  ack={droppedAck}
+                  onAck={setDroppedAck}
+                  expanded={droppedExpanded}
+                  onExpand={() => setDroppedExpanded(true)}
+                  disabled={approving}
+                />
 
                 {/* Numeric conflicts (prominent) */}
                 {conflicts.length > 0 && (
@@ -1496,24 +1776,46 @@ export default function KnowledgeBasePage() {
           ) : null}
 
           <DialogFooter showCloseButton>
-            {reviewDoc && reviewDoc.status === "pending_review" && (
-              <Button
-                onClick={handleApprove}
-                disabled={approving || (isForcedSBS && !tablesReviewed) || (conflicts.length > 0 && !conflictsAck)}
-                title={
-                  (isForcedSBS && !tablesReviewed)
-                    ? "Check the box above to confirm you reviewed the tables"
-                    : (conflicts.length > 0 && !conflictsAck)
-                    ? "Acknowledge the numeric conflicts above before approving"
-                    : undefined
-                }
-              >
-                {approving ? (
-                  <><Loader2 size={14} className="animate-spin mr-2" />Approving…</>
-                ) : (
-                  <><CheckCircle size={14} className="mr-2" />Approve</>
+            {reviewDoc && (
+              /* ── The footer restatement ──────────────────────────────────
+                  This line renders in EVERY drop state, including the ones the
+                  inline block stays silent for. It is not dismissible, it
+                  interrupts nothing, and it is on screen at the exact moment of
+                  the decision no matter how far the operator has scrolled — the
+                  answer to "the block was above the fold and they scrolled
+                  past it". The inline content carries comprehension; this
+                  guarantees the fact is present at the point of commit. */
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <DropStatusLine verdict={dropVerdict} />
+                {reviewDoc.status === "pending_review" && (
+                  <div className="flex flex-col items-stretch gap-1 sm:items-end">
+                    <Button
+                      onClick={handleApprove}
+                      disabled={approving || approveBlockers.length > 0}
+                      title={
+                        approveBlockers.length > 0
+                          ? `Before approving: ${approveBlockers.join("; ")}`
+                          : undefined
+                      }
+                    >
+                      {approving ? (
+                        <><Loader2 size={14} className="animate-spin mr-2" />Approving…</>
+                      ) : (
+                        <><CheckCircle size={14} className="mr-2" />Approve</>
+                      )}
+                    </Button>
+                    {/* Visible, not only in `title` — `title` doesn't exist on
+                        touch, and a dead button with no stated reason is the
+                        thing BUILD-CHECKLIST #4 forbids. Every unmet gate is
+                        listed, not just the first. */}
+                    {approveBlockers.length > 0 && (
+                      <p className="max-w-xs text-[11px] leading-relaxed text-muted-foreground sm:text-right">
+                        Before approving: {approveBlockers.join("; ")}.
+                      </p>
+                    )}
+                  </div>
                 )}
-              </Button>
+              </div>
             )}
           </DialogFooter>
         </DialogContent>

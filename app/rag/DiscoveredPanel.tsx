@@ -24,6 +24,7 @@ import {
 import { InfoTip } from "@/components/InfoTip";
 import { StatusBadge } from "./StatusBadge";
 import {
+  countDiscovered,
   isSourceDateUnknown,
   publisherDomain,
   runDiscovery,
@@ -63,9 +64,44 @@ interface Props {
   onReview: (documentId: string) => void;
   /** Re-fetch the queue (also called after a manual discovery run). */
   onRefresh: () => void;
+  /**
+   * Auto-discovered rows recovered from `GET /rag/documents` itself, used ONLY
+   * when this endpoint is unavailable or errored.
+   *
+   * ⚠️ WHY THIS PROP EXISTS. The main list now partitions on the row's own
+   * `sourceUrl`/`discoveredVia`, which no longer depends on this endpoint
+   * succeeding. That is the fix — but it means a discovered document is moved
+   * OUT of the Documents tab even when this queue is down, and without a
+   * fallback it would then be visible in neither tab. Silently disappearing a
+   * document nobody has read is a worse failure than the one the split fixes.
+   *
+   * These rows carry no `sourceDate`, because `/rag/documents` doesn't return
+   * one — so they render as "Publication date unknown", which is true of what
+   * we know rather than of the document.
+   */
+  fallbackDocs?: DiscoveredDocument[];
 }
 
-export function DiscoveredPanel({ docs, loading, error, unavailable, onReview, onRefresh }: Props) {
+export function DiscoveredPanel({
+  docs,
+  loading,
+  error,
+  unavailable,
+  onReview,
+  onRefresh,
+  fallbackDocs = [],
+}: Props) {
+  /**
+   * The rows actually on screen — the same choice the list body below makes, so
+   * the header count can never describe a different population than the table.
+   */
+  const rows = (unavailable || error) && fallbackDocs.length > 0 ? fallbackDocs : docs;
+  /**
+   * ⚠️ Never `rows.length` for anything called "waiting". This endpoint has no
+   * status filter and keeps approved documents forever — see countDiscovered.
+   */
+  const counts = countDiscovered(rows);
+
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const discoveringRef = useRef(false);
@@ -100,29 +136,59 @@ export function DiscoveredPanel({ docs, loading, error, unavailable, onReview, o
 
   return (
     <div className="flex flex-col gap-3">
-      {/* ── Why this queue exists ─────────────────────────────────────────── */}
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
-        <p className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
-          <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-          <span>
-            <strong>Nobody has read these.</strong>{" "}
-            A machine fetched them from the internet because customers asked questions the knowledge
-            base could not answer. Read each one before approving it — approving publishes it to
-            customers.
-          </span>
-        </p>
-      </div>
+      {/* ── Why this queue exists ───────────────────────────────────────────
+          ⚠️ "Nobody has read these" is a claim about the ROWS ON SCREEN, and
+          this endpoint returns approved documents forever (see countDiscovered).
+          On dev it stated that about three documents that were approved and live
+          in the knowledge base. It is now conditional on there actually being
+          something unread, and the already-approved case gets its own, true,
+          and quieter sentence. */}
+      {counts.awaiting > 0 ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
+          <p className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            <span>
+              <strong>
+                Nobody has read {counts.awaiting === 1 ? "this one" : `these ${counts.awaiting}`}.
+              </strong>{" "}
+              A machine fetched {counts.awaiting === 1 ? "it" : "them"} from the internet because
+              customers asked questions the knowledge base could not answer. Read each one before
+              approving it — approving publishes it to customers.
+            </span>
+          </p>
+        </div>
+      ) : (
+        !loading &&
+        !error &&
+        !unavailable &&
+        rows.length > 0 && (
+          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              <strong className="text-foreground">Nothing is waiting for review.</strong>{" "}
+              {counts.approved > 0 && (
+                <>
+                  {counts.approved} of these {counts.approved === 1 ? "was" : "were"} approved and{" "}
+                  {counts.approved === 1 ? "is" : "are"} live in the knowledge base.{" "}
+                </>
+              )}
+              This list is the record of what a machine put here, so approved documents stay in it.
+            </p>
+          </div>
+        )
+      )}
 
       {/* ── Header: count + manual run ────────────────────────────────────── */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
           {/* The count is only stated when it is actually known. While loading or
               after a failure, "0 waiting" would be a claim we cannot make. */}
+          {/* Only `awaiting` may be called "waiting for review". The row total
+              is stated separately so the list length is still accounted for. */}
           {loading
             ? "Loading queue…"
             : error || unavailable
             ? "Queue unavailable"
-            : `${docs.length} waiting for review`}
+            : `${counts.awaiting} waiting for review · ${rows.length} auto-discovered in total`}
           <InfoTip label="Documents the backend found on its own, for questions customers asked that the knowledge base had no answer for. They are inert until you approve them one at a time." />
         </span>
         <div className="flex items-center gap-2">
@@ -177,6 +243,28 @@ export function DiscoveredPanel({ docs, loading, error, unavailable, onReview, o
             <Skeleton key={i} className="h-28" />
           ))}
         </div>
+      ) : (unavailable || error) && fallbackDocs.length > 0 ? (
+        // The queue endpoint is down, but the documents list itself stamps
+        // provenance — so these rows are still reachable. Say exactly where they
+        // came from and what is missing from them; a silent fallback that looked
+        // like the real queue would overstate what we know.
+        <>
+          <p className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+            <span>
+              The discovered queue couldn&apos;t be loaded
+              {error ? <> — {error}</> : " in this environment"}. These{" "}
+              {fallbackDocs.length} row{fallbackDocs.length !== 1 ? "s were" : " was"} recovered from
+              the documents list instead, so publication dates are missing here and the list may not
+              be complete.
+            </span>
+          </p>
+          <ul className="flex flex-col gap-2">
+            {fallbackDocs.map((doc) => (
+              <DiscoveredRow key={doc.documentId} doc={doc} onReview={onReview} />
+            ))}
+          </ul>
+        </>
       ) : unavailable ? (
         // 404 — deliberately worded as a missing capability, not an outage, so an
         // older backend doesn't look like a broken one.
