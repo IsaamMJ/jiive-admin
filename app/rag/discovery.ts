@@ -94,39 +94,91 @@ export function readProvenance(doc: RagDocument): Provenance {
 /**
  * The split of the main documents list.
  *
+ * ⚠️ THE SPLIT IS ON "HAS A HUMAN DECIDED?", **NOT** ON "WHO FOUND IT".
+ *
+ * It used to be the latter: every row with a `sourceUrl` was withheld from the
+ * Documents tab for good, on the reasoning that a machine-fetched row shares a
+ * table with a human-vetted one and the distinction disappears. That reasoning
+ * is right about ONE population and wrong about the other:
+ *
+ *   discovered + pending_review → nobody has ever read it. Keep it out of the
+ *       library; it is not in the knowledge base and must not sit in a list
+ *       that reads as "what we have".
+ *   discovered + ready         → a human opened it, read it and approved it.
+ *       It IS in the knowledge base. Withholding it means an operator who just
+ *       approved ten documents sees them vanish from Documents and stay in a
+ *       tab captioned "Discovered", with a Read-&-review button still on them.
+ *       That is the "I approved these, why are they still here?" bug.
+ *
+ * So `library` is everything a human has vetted, discovered or not — the actual
+ * contents of the knowledge base. `ProvenanceCell` already renders the publisher
+ * domain per row, so a machine-found document is still legible as one there;
+ * the belt-and-braces exclusion was costing more truth than it bought.
+ *
+ * `discovered` (every machine-found row, approved or not) is kept as its own
+ * field because the Discovered tab is a PROVENANCE RECORD — it answers "what did
+ * a machine put in here", which stays true forever. Rows therefore appear in
+ * both, deliberately: one list is the library, the other is the audit trail.
+ *
  * `available: false` means this server does not mark provenance at all, so the
- * split CANNOT be made. In that case `uploaded` holds every row unfiltered —
- * and the caller must say so on screen. A list that looks filtered but isn't is
+ * split CANNOT be made. In that case `library` holds every row unfiltered — and
+ * the caller must say so on screen. A list that looks filtered but isn't is
  * strictly worse than an honestly unfiltered one, because it quietly presents
  * clinical content nobody has read as something a human selected.
  */
 export interface DocPartition {
   available: boolean;
-  uploaded: RagDocument[];
+  /** What the Documents tab lists: every row a human has vetted. */
+  library: RagDocument[];
+  /**
+   * Machine-found AND not yet approved — withheld from `library`, because these
+   * are not in the knowledge base and nobody has read them. The ONLY rows the
+   * Documents tab has to account for as missing.
+   */
+  unreviewed: RagDocument[];
+  /** Every machine-found row, approved or not. The Discovered tab's population. */
   discovered: RagDocument[];
+}
+
+/**
+ * `ready` is the post-approval state: chunks are created BY the approve step, so
+ * a discovered row sits at `chunkCount: 0` until a human commits it. Anything
+ * else — pending_review, queued, processing, failed — is not in the KB and has
+ * not been read.
+ */
+function isVetted(doc: RagDocument): boolean {
+  return doc.status === "ready";
 }
 
 export function partitionDocs(docs: RagDocument[]): DocPartition {
   // An empty list needs no capability claim: there is nothing hidden either way,
-  // so this is reported as available with two empty lists rather than as a
-  // failure the operator has to interpret.
-  if (docs.length === 0) return { available: true, uploaded: [], discovered: [] };
+  // so this is reported as available with empty lists rather than as a failure
+  // the operator has to interpret.
+  if (docs.length === 0) return { available: true, library: [], unreviewed: [], discovered: [] };
   // One row carrying the field proves the server sends it. Probing "any row"
   // rather than "every row" matters because the backend omits nothing per-row —
   // it either has the columns or it doesn't.
   const available = docs.some((d) => "sourceUrl" in d || "discoveredVia" in d);
-  if (!available) return { available: false, uploaded: docs, discovered: [] };
-  const uploaded: RagDocument[] = [];
+  if (!available) return { available: false, library: docs, unreviewed: [], discovered: [] };
+  const library: RagDocument[] = [];
+  const unreviewed: RagDocument[] = [];
   const discovered: RagDocument[] = [];
   for (const doc of docs) {
-    (readProvenance(doc).kind === "discovered" ? discovered : uploaded).push(doc);
+    if (readProvenance(doc).kind !== "discovered") {
+      library.push(doc);
+      continue;
+    }
+    discovered.push(doc);
+    // Approved machine-found documents are library contents AND stay in the
+    // provenance record. Unapproved ones are only in the record.
+    (isVetted(doc) ? library : unreviewed).push(doc);
   }
-  return { available: true, uploaded, discovered };
+  return { available: true, library, unreviewed, discovered };
 }
 
 /** Shown next to the split so the mechanism is never a mystery. */
 export const PARTITION_NOTE =
-  "The server now stamps each document with where it came from, so this split is read straight off the row rather than guessed in the browser.";
+  "This tab lists what is actually in the knowledge base, whether you uploaded it or the backend found it and you approved it — the Source column says which. Only auto-discovered documents nobody has approved yet are held back, because those are not in the knowledge base.";
 
 /** Shown INSTEAD of the split when the server doesn't stamp provenance. */
 export const PARTITION_UNAVAILABLE_NOTE =
@@ -383,4 +435,35 @@ export function countDiscovered(docs: Array<{ status: string }>): DiscoveredCoun
     else notReady++;
   }
   return { awaiting, approved, notReady };
+}
+
+/**
+ * Which band a discovered row belongs to, and therefore where it sorts.
+ *
+ * Three bands, in the order a reviewer cares about them:
+ *   0 awaiting — the only rows that are work.
+ *   1 notReady — queued / processing / failed. Not actionable, not read either.
+ *   2 approved — the record. Nothing to do.
+ */
+export function discoveredBand(status: string): 0 | 1 | 2 {
+  if (status === "pending_review") return 0;
+  if (status === "ready") return 2;
+  return 1;
+}
+
+/**
+ * Order the queue so work floats to the top.
+ *
+ * The endpoint returns newest-first and never filters, so once a handful of
+ * documents have been approved a genuinely unread one arrives into the middle of
+ * a list of things that need nothing. Approved rows are not dropped — they are
+ * the provenance record and that is the point — they are just sorted beneath the
+ * work, behind a divider the panel draws.
+ *
+ * Stable within a band: `Array.prototype.sort` is stable in every engine we ship
+ * to, so newest-first survives inside each group and this adds an ordering
+ * without inventing one.
+ */
+export function sortDiscovered<T extends { status: string }>(docs: T[]): T[] {
+  return [...docs].sort((a, b) => discoveredBand(a.status) - discoveredBand(b.status));
 }

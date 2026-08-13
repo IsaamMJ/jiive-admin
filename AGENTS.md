@@ -32,6 +32,24 @@ Top-level directories under `app/` (Next.js App Router) and their owners:
   anywhere else in the module. Suspected-incidents panel is derived client-side from
   `GET /bookings`, so it works without the incidents backend.
 - `app/results/` — lab results list + per-result detail
+- `app/rag/` — the clinical knowledge base: upload/convert/paste documents, review them
+  one at a time, and approve them into the KB. The Discovered tab holds documents the
+  backend fetched off the internet by itself, for questions customers asked that the KB
+  could not answer. Contract + traps in `types.ts`, all discovery axios + wire guards in
+  `discovery.ts`, the chunk-loss verdict in `chunkPreview.ts`.
+  Live traps, each documented at its point of enforcement:
+  `GET /rag/discovered` has NO status filter (`discoveredVia IS NOT NULL` and nothing
+  else), so an approved document stays in that list forever — it is a PROVENANCE RECORD,
+  not a work queue, and every aggregate must come from `countDiscovered`, never from
+  `.length`. The Documents/Discovered split is on **has a human approved this**, not on
+  who found it: an approved discovered document is KB content and belongs in Documents,
+  while an unapproved one is in neither the KB nor Documents. `ready` is the
+  post-approval state and is labelled **Live** — "Ready" reads as *ready for review*,
+  its own inverse. `sourceDate` is free-form and is often the literal string `"unknown"`,
+  so it is never parsed or formatted. `chunkPreview` is a dry run of the CURRENT chunker
+  re-executed at read time, so it may only be spoken about in the past tense when its
+  count matches the stored `chunkCount`. There is deliberately no bulk-approve anywhere
+  in this module, and it must not grow one.
 - `app/credits/` — balances, packs, action costs
 - `app/packages/` — the bookable Thyrocare packages: price, and which panel a customer
   actually gets. Contract + traps in `types.ts`, the only axios in `api.ts` (it carries

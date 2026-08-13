@@ -30,7 +30,6 @@ import {
 } from "./chunkPreview";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -789,10 +788,15 @@ export default function KnowledgeBasePage() {
   // ── Derived ───────────────────────────────────────────────────────────────
 
   /**
-   * Partition the main list so uploaded and auto-discovered documents aren't
-   * silently mixed.
+   * Partition the main list.
    *
-   * Read straight off the row now (`sourceUrl` / `discoveredVia`) — the old
+   * ⚠️ The split is on "has a human approved this", NOT on "who found it" — see
+   * the long note on `DocPartition` in discovery.ts. `library` is what is
+   * actually in the knowledge base, including machine-found documents an
+   * operator has read and approved; only unapproved discovered rows are held
+   * back, because those genuinely are not in the KB and nobody has read them.
+   *
+   * Read straight off the row (`sourceUrl` / `discoveredVia`) — the old
    * id-Set-against-/rag/discovered workaround is deleted. See the provenance
    * block in discovery.ts for the dev/prod verification and for why the
    * "server doesn't mark provenance" case is a NAMED variant rather than a
@@ -803,17 +807,22 @@ export default function KnowledgeBasePage() {
    */
   const partition = partitionDocs(docs);
   const partitionAvailable = partition.available;
-  const uploadedDocs = partition.uploaded;
-  // How many rows the split moved out of the visible list. Counted from the same
-  // array that is being rendered, so it can never describe rows we can't see —
-  // `discovered.length` (the separate queue endpoint) is a different population.
-  const hiddenDiscoveredCount = partition.discovered.length;
+  const libraryDocs = partition.library;
+  // Rows the split withholds from the Documents tab: machine-found and not yet
+  // approved. Counted from the same array that is being rendered, so it can
+  // never describe rows we can't see — `discovered.length` (the separate queue
+  // endpoint) is a different population.
+  const unreviewedCount = partition.unreviewed.length;
 
   /**
-   * The rows the split moved out, shaped for the Discovered panel, used only if
-   * `/rag/discovered` itself is down. Without this a discovered document would
-   * be partitioned out of Documents and have nowhere to appear — see the
-   * `fallbackDocs` comment in DiscoveredPanel.
+   * Every machine-found row, shaped for the Discovered panel, used only if
+   * `/rag/discovered` itself is down. Without this an unapproved discovered
+   * document would be withheld from Documents and have nowhere to appear — see
+   * the `fallbackDocs` comment in DiscoveredPanel.
+   *
+   * Built from `partition.discovered` (approved rows included), not from
+   * `partition.unreviewed`: this tab is the provenance record, so a degraded
+   * render should still be the whole record rather than only its unfinished end.
    *
    * `sourceDate: null` is the truth here: `/rag/documents` doesn't carry one, so
    * the row renders "Publication date unknown", which describes what we know
@@ -1347,25 +1356,37 @@ export default function KnowledgeBasePage() {
                       while loading — or after the fetch failed — would read as
                       "nothing is waiting", which is a claim we can't make. */}
                   {!discoveredLoading && !discoveredError && !discoveredUnavailable && (
-                    /* Badges the AWAITING count, not the row count. An amber
-                       badge is a call to action; on dev it read "3" for three
-                       already-approved documents, permanently. Neutral grey
-                       still shows the total so the tab isn't silent about
-                       having contents. */
-                    <span
-                      className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
-                        discoveredCounts.awaiting > 0
-                          ? "bg-amber-500/20 text-amber-700 dark:text-amber-400"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                      title={
-                        discoveredCounts.awaiting > 0
-                          ? `${discoveredCounts.awaiting} waiting for review`
-                          : `${discovered.length} auto-discovered, none waiting for review`
-                      }
-                    >
-                      {discoveredCounts.awaiting > 0 ? discoveredCounts.awaiting : discovered.length}
-                    </span>
+                    /* ⚠️ A NUMBER ON A TAB IS READ AS A COUNT OF WORK.
+                       This used to fall back to the row total in neutral grey
+                       when nothing was awaiting, on the reasoning that the tab
+                       shouldn't be silent about having contents. Colour doesn't
+                       survive a glance: on dev the tab read "Discovered 10" for
+                       ten documents that were approved and live, and the true
+                       count — zero — was only reachable by hovering.
+                       So the number is rendered ONLY when it means something to
+                       do. "This tab has contents" is carried by a check instead,
+                       which cannot be misread as a backlog, and the panel's own
+                       header still states both counts in full. */
+                    discoveredCounts.awaiting > 0 ? (
+                      <span
+                        className="ml-1.5 rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-amber-700 dark:text-amber-400"
+                        title={`${discoveredCounts.awaiting} waiting for review`}
+                      >
+                        {discoveredCounts.awaiting}
+                      </span>
+                    ) : (
+                      discovered.length > 0 && (
+                        <span
+                          className="ml-1.5 inline-flex items-center"
+                          title={`${discovered.length} auto-discovered, none waiting for review`}
+                        >
+                          <CheckCircle size={12} className="shrink-0 text-muted-foreground" aria-hidden />
+                          <span className="sr-only">
+                            {discovered.length} auto-discovered, none waiting for review
+                          </span>
+                        </span>
+                      )
+                    )
                   )}
                 </TabsTrigger>
               </TabsList>
@@ -1374,7 +1395,7 @@ export default function KnowledgeBasePage() {
             {listView === "documents" && (
               /* "loaded", not "total" — see DOCS_LIST_CAP. */
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                {uploadedDocs.length} loaded
+                {libraryDocs.length} loaded
                 {docs.length >= DOCS_LIST_CAP && (
                   <>
                     <AlertTriangle size={12} className="text-amber-400" />
@@ -1397,13 +1418,20 @@ export default function KnowledgeBasePage() {
             />
           ) : (
           <>
-          {/* The split is never silent: say what was moved out, or say plainly
+          {/* The split is never silent: say what was withheld, or say plainly
               that the split could not be made. See the provenance block in
-              discovery.ts. */}
-          {!docsLoading && partitionAvailable && hiddenDiscoveredCount > 0 && (
+              discovery.ts.
+
+              Gated on `unreviewedCount`, NOT on the discovered total. This line
+              used to fire for every machine-found row and told an operator who
+              had just approved ten documents that all ten were "listed under
+              Discovered, not here" — which read as a refusal to admit them to
+              the knowledge base. It now describes only what is genuinely absent:
+              documents nobody has approved. */}
+          {!docsLoading && partitionAvailable && unreviewedCount > 0 && (
             <p className="text-xs text-muted-foreground">
-              {hiddenDiscoveredCount} auto-discovered document
-              {hiddenDiscoveredCount !== 1 ? "s are" : " is"} listed under{" "}
+              {unreviewedCount} auto-discovered document
+              {unreviewedCount !== 1 ? "s are" : " is"} waiting for review under{" "}
               <button
                 type="button"
                 onClick={() => setListView("discovered")}
@@ -1411,7 +1439,9 @@ export default function KnowledgeBasePage() {
               >
                 Discovered
               </button>
-              , not here. <InfoTip label={PARTITION_NOTE} />
+              {unreviewedCount !== 1 ? " and aren't" : " and isn't"} in the knowledge base yet, so{" "}
+              {unreviewedCount !== 1 ? "they aren't" : "it isn't"} listed here.{" "}
+              <InfoTip label={PARTITION_NOTE} />
             </p>
           )}
           {/* This server doesn't stamp provenance, so the list below is
@@ -1442,7 +1472,7 @@ export default function KnowledgeBasePage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {uploadedDocs.map((doc) => (
+                  {libraryDocs.map((doc) => (
                     <TableRow key={doc.documentId}>
                       <TableCell className="font-medium max-w-xs truncate">{doc.title}</TableCell>
                       <TableCell><ProvenanceCell doc={doc} /></TableCell>
@@ -1477,13 +1507,14 @@ export default function KnowledgeBasePage() {
                       </TableCell>
                     </TableRow>
                   ))}
-                  {uploadedDocs.length === 0 && (
+                  {libraryDocs.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                        {/* "You haven't uploaded anything" ≠ "the knowledge base is
-                            empty" once discovered documents have been split out. */}
-                        {hiddenDiscoveredCount > 0
-                          ? "Nothing uploaded by hand — every document here was auto-discovered. See the Discovered tab."
+                        {/* An empty library with documents pending is NOT the same
+                            fact as an empty knowledge base, and must not read as
+                            "upload something" when the work is to approve. */}
+                        {unreviewedCount > 0
+                          ? `The knowledge base is empty — ${unreviewedCount} auto-discovered document${unreviewedCount !== 1 ? "s are" : " is"} waiting for review under Discovered. Nothing reaches customers until you approve ${unreviewedCount !== 1 ? "them" : "it"}.`
                           : "No documents yet — upload a PDF to get started."}
                       </TableCell>
                       {/* colSpan tracks the header — Source added a sixth column. */}
@@ -1787,6 +1818,18 @@ export default function KnowledgeBasePage() {
                   guarantees the fact is present at the point of commit. */
               <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <DropStatusLine verdict={dropVerdict} />
+                {/* An already-approved document has no Approve button — correct,
+                    but the footer then went silent, and a drawer that offers no
+                    action and no reason reads as a broken one. Say which it is.
+                    Deliberately NOT an "un-approve" affordance: withdrawing a
+                    document is a delete, and it lives in the list where the
+                    consequences are spelled out. */}
+                {reviewDoc.status === "ready" && (
+                  <p className="inline-flex items-center gap-1.5 text-xs text-green-700 dark:text-green-400">
+                    <CheckCircle size={13} className="shrink-0" />
+                    Already approved — live in the knowledge base and searchable by customers.
+                  </p>
+                )}
                 {reviewDoc.status === "pending_review" && (
                   <div className="flex flex-col items-stretch gap-1 sm:items-end">
                     <Button

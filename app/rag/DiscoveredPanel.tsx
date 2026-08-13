@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -25,22 +25,32 @@ import { InfoTip } from "@/components/InfoTip";
 import { StatusBadge } from "./StatusBadge";
 import {
   countDiscovered,
+  discoveredBand,
   isSourceDateUnknown,
   publisherDomain,
   runDiscovery,
   safeSourceUrl,
+  sortDiscovered,
   type DiscoverOutcome,
 } from "./discovery";
 import type { DiscoveredDocument } from "./types";
 
 /**
- * The Discovered review queue.
+ * The Discovered tab: the record of what a machine put in the knowledge base.
  *
  * Every document here was fetched from the internet by a machine because a real
- * customer asked something the knowledge base could not answer. **Nobody has
- * read any of it.** Approving one publishes clinical content to a live health
- * product, so this panel deliberately offers exactly one affordance per row:
- * open it and read it.
+ * customer asked something the knowledge base could not answer. Approving one
+ * publishes clinical content to a live health product, so a row that is still
+ * awaiting a decision offers exactly one affordance: open it and read it.
+ *
+ * ⚠️ THIS IS NOT A LIST OF WORK. `GET /rag/discovered` has no status filter, so
+ * an approved document stays here forever — see countDiscovered. Rows therefore
+ * come in two kinds and MUST NOT be rendered alike:
+ *   awaiting → amber pill, "Read & review", present tense ("the KB has no
+ *       answer"), sorted to the top.
+ *   approved → green "Live" pill, "View", past tense, sorted below a divider.
+ * Handing an approved document a "Read & review" button is how ten finished
+ * documents came to read as ten open tasks.
  *
  * ⚠️ DO NOT ADD select-all, multi-select, or an approve-all here. From the
  * backend handoff: *"it is the one place in the product where reading before
@@ -168,10 +178,13 @@ export function DiscoveredPanel({
               {counts.approved > 0 && (
                 <>
                   {counts.approved} of these {counts.approved === 1 ? "was" : "were"} approved and{" "}
-                  {counts.approved === 1 ? "is" : "are"} live in the knowledge base.{" "}
+                  {counts.approved === 1 ? "is" : "are"}{" "}
+                  live in the knowledge base — you&apos;ll find{" "}
+                  {counts.approved === 1 ? "it" : "them"} under{" "}
+                  <strong className="text-foreground">Documents</strong> too.{" "}
                 </>
               )}
-              This list is the record of what a machine put here, so approved documents stay in it.
+              This tab is the record of what a machine put here, so approved documents stay in it.
             </p>
           </div>
         )
@@ -259,11 +272,7 @@ export function DiscoveredPanel({
               be complete.
             </span>
           </p>
-          <ul className="flex flex-col gap-2">
-            {fallbackDocs.map((doc) => (
-              <DiscoveredRow key={doc.documentId} doc={doc} onReview={onReview} />
-            ))}
-          </ul>
+          <DiscoveredList docs={fallbackDocs} onReview={onReview} />
         </>
       ) : unavailable ? (
         // 404 — deliberately worded as a missing capability, not an outage, so an
@@ -299,11 +308,7 @@ export function DiscoveredPanel({
           body="This fills up as customers ask things the knowledge base can't answer. A question has to come up at least twice in a week before the backend goes looking, and it checks weekly. An empty queue means nothing has been fetched yet — not that the knowledge base is complete."
         />
       ) : (
-        <ul className="flex flex-col gap-2">
-          {docs.map((doc) => (
-            <DiscoveredRow key={doc.documentId} doc={doc} onReview={onReview} />
-          ))}
-        </ul>
+        <DiscoveredList docs={docs} onReview={onReview} />
       )}
 
       <DiscoverConfirmDialog
@@ -312,6 +317,52 @@ export function DiscoveredPanel({
         onConfirm={handleDiscover}
       />
     </div>
+  );
+}
+
+// ── The list ─────────────────────────────────────────────────────────────────
+
+/**
+ * The rows, work first.
+ *
+ * The endpoint returns newest-first and keeps approved rows forever, so without
+ * this an unread document arrives wherever its timestamp lands — somewhere in a
+ * column of documents that need nothing. `sortDiscovered` floats the three bands
+ * (awaiting → not-ready → approved) and a divider names the boundary, so the
+ * approved tail reads as an archive rather than as more of the same queue.
+ *
+ * The tail is never collapsed behind a "show more". It is the record of what a
+ * machine put into a live clinical knowledge base; that has to stay in plain
+ * sight, just not in the way.
+ */
+function DiscoveredList({
+  docs,
+  onReview,
+}: {
+  docs: DiscoveredDocument[];
+  onReview: (documentId: string) => void;
+}) {
+  const sorted = sortDiscovered(docs);
+  const firstApproved = sorted.findIndex((d) => discoveredBand(d.status) === 2);
+  // Only when something sits above it — a list that is entirely approved needs
+  // no boundary, and the panel's own header already says nothing is waiting.
+  const dividerAt = firstApproved > 0 ? firstApproved : -1;
+
+  return (
+    <ul className="flex flex-col gap-2">
+      {sorted.map((doc, i) => (
+        <Fragment key={doc.documentId}>
+          {i === dividerAt && (
+            <li className="flex items-center gap-2 pt-2 text-[11px] text-muted-foreground">
+              <span className="h-px flex-1 bg-border" />
+              <span className="shrink-0">Already approved — kept as a record</span>
+              <span className="h-px flex-1 bg-border" />
+            </li>
+          )}
+          <DiscoveredRow doc={doc} onReview={onReview} />
+        </Fragment>
+      ))}
+    </ul>
   );
 }
 
@@ -327,6 +378,13 @@ function DiscoveredRow({
   const domain = publisherDomain(doc.sourceUrl);
   const href = safeSourceUrl(doc.sourceUrl);
   const dateUnknown = isSourceDateUnknown(doc.sourceDate);
+  /**
+   * Approved and live. The row still exists — this tab is the provenance record
+   * — but it is finished, and every affordance and every tense on it says so.
+   */
+  const approved = doc.status === "ready";
+  /** Still being parsed. There is nothing to read yet, so there is nothing to open. */
+  const parsing = doc.status === "queued" || doc.status === "processing";
 
   return (
     <li className="rounded-lg border border-border p-3">
@@ -378,13 +436,28 @@ function DiscoveredRow({
             {doc.discoveryQuery ? (
               // Plain inline flow, not flex: at 375px a flex row breaks this
               // sentence into ragged columns instead of wrapping as a sentence.
+              //
+              // ⚠️ TENSE FOLLOWS STATUS. "the knowledge base had no answer" is
+              // present-perfect about a gap that is still open — which stops
+              // being true the moment this document is approved, because
+              // approving it is what closed the gap. An approved row saying the
+              // KB has no answer for the very question it now answers is a
+              // standing falsehood on ten rows out of ten.
               <span className="text-muted-foreground">
-                Customers asked about{" "}
+                {approved ? "Fetched because customers asked about" : "Customers asked about"}{" "}
                 <span className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
                   {doc.discoveryQuery}
                 </span>{" "}
-                and the knowledge base had no answer{" "}
-                <InfoTip label="The backend logs every question it fails to answer. When one keeps coming up, it goes looking for a document that covers it. That question is what you're reviewing this document against." />
+                {approved
+                  ? "— a gap this document was approved to fill"
+                  : "and the knowledge base had no answer"}{" "}
+                <InfoTip
+                  label={
+                    approved
+                      ? "The backend logs every question it fails to answer. This document was fetched for that gap and is now live, so the same question should retrieve it."
+                      : "The backend logs every question it fails to answer. When one keeps coming up, it goes looking for a document that covers it. That question is what you're reviewing this document against."
+                  }
+                />
               </span>
             ) : (
               <span className="text-muted-foreground">
@@ -407,16 +480,33 @@ function DiscoveredRow({
           </div>
         </div>
 
-        {/* One document, one decision. No checkbox, by design. */}
+        {/* One document, one decision. No checkbox, by design.
+
+            The LABEL is the decision state, not a constant. "Read & review" on a
+            document that is already live is an instruction to do something that
+            is done — and with the endpoint keeping approved rows forever, that
+            was every row on the screen. An approved row gets a quiet "View": the
+            content is still one click away, it just isn't asking. */}
         <div className="shrink-0">
           <Button
             size="sm"
-            variant="outline"
+            variant={approved || parsing ? "ghost" : "outline"}
             className="w-full sm:w-auto"
+            disabled={parsing}
+            title={parsing ? "Still being parsed — there's nothing to read yet." : undefined}
             onClick={() => onReview(doc.documentId)}
           >
-            <Eye size={14} className="mr-1.5" />
-            Read &amp; review
+            {parsing ? (
+              <>
+                <Loader2 size={14} className="mr-1.5 animate-spin" />
+                Parsing…
+              </>
+            ) : (
+              <>
+                <Eye size={14} className="mr-1.5" />
+                {approved ? "View" : "Read & review"}
+              </>
+            )}
           </Button>
         </div>
       </div>
