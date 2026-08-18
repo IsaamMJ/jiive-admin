@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, RefreshCw, CalendarClock, XCircle, AlertTriangle, ChevronDown } from "lucide-react";
+import { Loader2, RefreshCw, CalendarClock, XCircle, AlertTriangle, ChevronDown, Wrench } from "lucide-react";
 import { AdminLayout } from "@/components/AdminLayout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { RescheduleDialog } from "./RescheduleDialog";
+import { FixDetailsDialog } from "./FixDetailsDialog";
 import { OrphanReports } from "./OrphanReports";
 import {
   type StuckBooking, type StuckBookingsResponse,
@@ -76,8 +77,20 @@ export default function StuckBookingsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [reschedule, setReschedule] = useState<StuckBooking | null>(null);
+  const [fixDetails, setFixDetails] = useState<StuckBooking | null>(null);
+  // Booking ids whose slot needs a reschedule re-check before Retry — set
+  // from a Fix & Retry save's `affectedBookingIds` (which includes every
+  // sibling sharing the edited booking's Address row, not just the one
+  // edited: that row is shared across a whole payment batch, so a pincode
+  // change silently moves every sibling to the new area too). Session-scoped
+  // only — there is no persisted column to rebuild this from after a reload,
+  // so a page refresh loses the gate; see the doRetry note below for why the
+  // plain Retry button is still routed through it while it lasts.
+  const [pendingReschedule, setPendingReschedule] = useState<Set<string>>(new Set());
   const confirmRef = useRef<Confirm>(null);
   confirmRef.current = confirm;
+  const fixDetailsRef = useRef<StuckBooking | null>(null);
+  fixDetailsRef.current = fixDetails;
 
   // Manual order-by-ID tool (the old standalone Thyrocare page, folded in here
   // behind a caution gate). Collapsed by default — it's the escape hatch, not
@@ -103,17 +116,29 @@ export default function StuckBookingsPage() {
     load();
     const id = setInterval(() => {
       // Don't yank the list out from under an open action dialog.
-      if (!confirmRef.current && !document.hidden) load({ silent: true });
+      if (!confirmRef.current && !fixDetailsRef.current && !document.hidden) load({ silent: true });
     }, POLL_MS);
     return () => clearInterval(id);
   }, [load]);
 
-  const doRetry = async (b: StuckBooking) => {
+  /** Resolves `true` only when an order actually got placed — FixDetailsDialog
+   * uses this to decide whether it's safe to close on Retry (a business
+   * refusal should keep the dialog open, not vanish with only a dismissable
+   * toast as the record). */
+  const doRetry = async (b: StuckBooking): Promise<boolean> => {
     setBusyId(b.id);
+    let placed = false;
     try {
       const { data } = await api.post(`/bookings/${b.id}/retry-order`, {});
       if (data.success) {
         toast.success(`${b.patientName}: order placed (${data.orderId ?? "ok"})`);
+        placed = true;
+        setPendingReschedule((prev) => {
+          if (!prev.has(b.id)) return prev;
+          const next = new Set(prev);
+          next.delete(b.id);
+          return next;
+        });
       } else if (data.error) {
         toast.error(`${b.patientName}: ${data.error}`);
       } else {
@@ -128,6 +153,7 @@ export default function StuckBookingsPage() {
       setBusyId(null);
       load({ silent: true });
     }
+    return placed;
   };
 
   const doCancel = async (b: StuckBooking) => {
@@ -237,9 +263,11 @@ export default function StuckBookingsPage() {
                     key={g.key}
                     group={g}
                     busyId={busyId}
+                    pendingReschedule={pendingReschedule}
                     onRetry={(b) => setConfirm({ type: "retry", booking: b })}
                     onReschedule={(b) => setReschedule(b)}
                     onCancel={(b) => setConfirm({ type: "cancel", booking: b })}
+                    onFixDetails={(b) => setFixDetails(b)}
                   />
                 ))}
               </TableBody>
@@ -336,7 +364,29 @@ export default function StuckBookingsPage() {
       <RescheduleDialog
         booking={reschedule}
         onClose={() => setReschedule(null)}
-        onPlaced={() => load({ silent: true })}
+        onPlaced={(bookingId) => {
+          setPendingReschedule((prev) => {
+            if (!prev.has(bookingId)) return prev;
+            const next = new Set(prev);
+            next.delete(bookingId);
+            return next;
+          });
+          load({ silent: true });
+        }}
+      />
+
+      {/* Fix & Retry — edit address/pincode/identity, then retry, without prod SQL */}
+      <FixDetailsDialog
+        booking={fixDetails}
+        onClose={() => setFixDetails(null)}
+        onSaved={(affectedBookingIds) => {
+          if (affectedBookingIds && affectedBookingIds.length > 0) {
+            setPendingReschedule((prev) => new Set([...prev, ...affectedBookingIds]));
+          }
+          load({ silent: true });
+        }}
+        onRetry={doRetry}
+        onOpenReschedule={(b) => setReschedule(b)}
       />
 
       {/* Retry / Cancel confirmation */}
@@ -388,13 +438,19 @@ export default function StuckBookingsPage() {
 }
 
 function GroupRows({
-  group, busyId, onRetry, onReschedule, onCancel,
+  group, busyId, pendingReschedule, onRetry, onReschedule, onCancel, onFixDetails,
 }: {
   group: Group;
   busyId: string | null;
+  /** Booking ids a Fix & Retry pincode save just flagged as needing a slot
+   * re-check (this booking's, or a cart sibling sharing the same Address row)
+   * before Retry is safe to click — see the `pendingReschedule` state in
+   * StuckBookingsPage for why this can't be rebuilt from a page reload. */
+  pendingReschedule: Set<string>;
   onRetry: (b: StuckBooking) => void;
   onReschedule: (b: StuckBooking) => void;
   onCancel: (b: StuckBooking) => void;
+  onFixDetails: (b: StuckBooking) => void;
 }) {
   const isCart = group.bookings.length > 1;
   return (
@@ -411,6 +467,7 @@ function GroupRows({
         const why = whyStuck(b.lastOrderError);
         const busy = busyId === b.id;
         const exhausted = b.thyrocareCreateAttempts >= RETRY_CAP;
+        const needsRescheduleFirst = pendingReschedule.has(b.id);
         return (
           <TableRow key={b.id} className={cn(isCart && "bg-muted/10")}>
             <TableCell>
@@ -435,9 +492,36 @@ function GroupRows({
             <TableCell className="text-right tabular-nums">{rupees(b.amount)}</TableCell>
             <TableCell>
               <div className="flex items-center justify-end gap-1">
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => onRetry(b)}>
-                  {busy ? <Loader2 className="animate-spin" size={13} /> : <RefreshCw size={13} />}
-                  Retry
+                {/* G3, mirrored here: an order already placed can't be edited from this
+                    dialog (it would double-book), so the action simply isn't offered. */}
+                {!b.thyrocareOrderId && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => onFixDetails(b)}>
+                    <Wrench size={13} />
+                    Fix &amp; Retry
+                  </Button>
+                )}
+                {/* A pincode change on the shared Address row (this booking's
+                    own Fix & Retry save, or a cart sibling's) leaves the slot
+                    chosen for the OLD area — routing Retry into Reschedule
+                    here is what actually enforces that hand-off, rather than
+                    just suggesting it while a one-click bypass sits right
+                    next to it. */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  title={needsRescheduleFirst ? "Pincode changed — check the slot before placing an order" : undefined}
+                  className={needsRescheduleFirst ? "border-amber-500/50 text-amber-600 hover:text-amber-600" : undefined}
+                  onClick={() => (needsRescheduleFirst ? onReschedule(b) : onRetry(b))}
+                >
+                  {busy ? (
+                    <Loader2 className="animate-spin" size={13} />
+                  ) : needsRescheduleFirst ? (
+                    <CalendarClock size={13} />
+                  ) : (
+                    <RefreshCw size={13} />
+                  )}
+                  {needsRescheduleFirst ? "Reschedule first" : "Retry"}
                 </Button>
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => onReschedule(b)}>
                   <CalendarClock size={13} />
