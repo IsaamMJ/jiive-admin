@@ -17,7 +17,10 @@ import { type StuckBooking, type Slot, type SlotsResponse, toYmd } from "./types
 interface Props {
   booking: StuckBooking | null;
   onClose: () => void;
-  onPlaced: () => void;
+  /** Passed the id of the booking just rescheduled, so a caller tracking a
+   * per-booking "needs reschedule" flag (Fix & Retry's pendingReschedule) can
+   * clear exactly that one. */
+  onPlaced: (bookingId: string) => void;
 }
 
 export function RescheduleDialog({ booking, onClose, onPlaced }: Props) {
@@ -81,7 +84,7 @@ export function RescheduleDialog({ booking, onClose, onPlaced }: Props) {
         toast.success(
           `Rescheduled to ${date} ${selected.time} — order ${data.orderId ?? "placed"}`,
         );
-        onPlaced();
+        onPlaced(booking.id);
         onClose();
       } else {
         setPlaceError(data.message ?? data.reason ?? "Reschedule failed");

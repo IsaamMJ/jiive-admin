@@ -1,11 +1,40 @@
 export interface StuckBookingUser {
   whatsappPhone: string;
   name: string;
+  /** ISO. Identity target when the booking has no patientId (booked for self). */
+  dob: string | null;
+  gender: string | null;
 }
 
 export interface StuckBookingAddress {
-  pincode: number | string;
+  id: string;
+  houseNo: string | null;
+  street: string;
+  addressLine1: string;
+  addressLine2: string;
+  landmark: string | null;
+  locality: string | null;
   city: string;
+  state: string;
+  pincode: number | string;
+}
+
+/** The FamilyMember row, when the booking was made for someone other than the account holder. */
+export interface StuckBookingPatient {
+  id: string;
+  name: string;
+  dob: string | null;   // ISO
+  gender: string | null;
+}
+
+/** Live byte-budget read of the address as currently stored (before any edit). */
+export interface AddressBudgetPreview {
+  usedBytes: number;
+  budgetBytes: number;
+  compositeLength: number;
+  trims: { kind: string }[];
+  aboveCap: boolean;
+  belowFloor: boolean;
 }
 
 export interface StuckBooking {
@@ -24,6 +53,43 @@ export interface StuckBooking {
   createdAt: string;                   // ISO
   user: StuckBookingUser;
   address: StuckBookingAddress | null;
+  /** Non-null when the booking was placed for a family member, not the account holder. */
+  patientId: string | null;
+  /** Non-null means an order already exists — Fix & Retry must refuse (G3). */
+  thyrocareOrderId: string | null;
+  addressId: string;
+  patient: StuckBookingPatient | null;
+  /** Untrimmed customer address text (houseNo+street+addressLine1+landmark joined) — the field Fix & Retry edits. */
+  addressText: string;
+  addressBudget: AddressBudgetPreview | null;
+}
+
+/** Who a stuck booking's identity edits would target — mirrors the backend's own rule exactly. */
+export function stuckBookingPatientTarget(b: StuckBooking): "account_holder" | "family_member" {
+  return b.patientId ? "family_member" : "account_holder";
+}
+
+export function stuckBookingStoredDob(b: StuckBooking): string | null {
+  const dob = b.patientId ? (b.patient?.dob ?? null) : b.user.dob;
+  return dob ? toYmd(dob) : null;
+}
+
+export function stuckBookingStoredGender(b: StuckBooking): "male" | "female" | "" {
+  const norm = stuckBookingStoredGenderRaw(b);
+  return norm === "male" || norm === "female" ? norm : "";
+}
+
+/**
+ * The trimmed/lowercased stored gender, WITHOUT collapsing an unrecognised
+ * value (legacy data predating the male/female-only rule) to "". Mirrors the
+ * backend's G7 check exactly (`!!storedGender && ... !== body.patientGender`)
+ * — used only to detect "this would overwrite something", never for display.
+ * `stuckBookingStoredGender` above is the one to prefill a male/female Select
+ * with; using this one there would make an odd legacy value look unset.
+ */
+export function stuckBookingStoredGenderRaw(b: StuckBooking): string {
+  const g = (b.patientId ? b.patient?.gender : b.user.gender) ?? "";
+  return g.trim().toLowerCase();
 }
 
 export interface StuckBookingsResponse {
@@ -42,6 +108,85 @@ export interface SlotsResponse {
   pincode: number | string;
   date: string;
   slots: Slot[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix & Retry — POST /bookings/:id/fix-details
+//
+// The Khalam incident (2026-08-17): a paid booking's Thyrocare order was
+// rejected ("address must be between 25 and 200 characters") and there was no
+// way to edit it short of a raw SQL UPDATE against prod RDS. This is that fix.
+//
+// Only send fields the operator actually changed — the backend re-validates
+// the address budget against the resolved city/state even when only the
+// pincode changed, and a confirmIdentityOverwrite must accompany a dob/gender
+// value that differs from what's already stored (G7).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FixDetailsRequest {
+  address?: string;
+  pincode?: string;
+  patientName?: string;
+  patientDob?: string;               // YYYY-MM-DD
+  patientGender?: "male" | "female";
+  confirmIdentityOverwrite?: boolean;
+  /** Informed-consent escape for a genuine long full name the 6-word/60-char plausibility check rejects. */
+  confirmNameOverride?: boolean;
+}
+
+export interface FixDetailsAddressResult {
+  pincode: number;
+  city: string;
+  state: string;
+  localityCleared: boolean;
+  usedBytes: number;
+  budgetBytes: number;
+  compositeLength: number;
+  trims: { kind: string }[];
+}
+
+export interface FixDetailsSuccess {
+  success: true;
+  bookingId: string;
+  patientTarget: "account_holder" | "family_member";
+  changed: string[];
+  address?: FixDetailsAddressResult;
+  attempts: { used: number; cap: number };
+  warnings: string[];
+  /** 'reschedule' after a pincode change — the old slot was chosen for the old area. */
+  nextStep: "retry" | "reschedule";
+  /**
+   * Every booking that shares this booking's Address row (this one plus any
+   * cart siblings) — non-empty only when the pincode changed. The Address
+   * row is shared across a whole payment batch, so a pincode edit silently
+   * moves every sibling's slot to the new area too; the console gates their
+   * Retry button on this the same way it gates this booking's via nextStep.
+   */
+  affectedBookingIds?: string[];
+}
+
+/** A guard passed but a later write failed mid-flight (near-impossible under the placement lock). */
+export interface FixDetailsPartial {
+  success: false;
+  partial: true;
+  changed: string[];
+  error: string;
+}
+
+/** A business refusal — HTTP 200, every message ends "Nothing was changed." */
+export interface FixDetailsRefusal {
+  error: string;
+  orderId?: string;
+}
+
+export type FixDetailsResponse = FixDetailsSuccess | FixDetailsPartial | FixDetailsRefusal;
+
+export function isFixDetailsSuccess(r: FixDetailsResponse): r is FixDetailsSuccess {
+  return (r as FixDetailsSuccess).success === true;
+}
+
+export function isFixDetailsPartial(r: FixDetailsResponse): r is FixDetailsPartial {
+  return (r as FixDetailsPartial).partial === true;
 }
 
 const RETRY_CAP = 6;
